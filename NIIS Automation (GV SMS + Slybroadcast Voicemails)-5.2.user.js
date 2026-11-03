@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         NIIS Automation (GV SMS + Slybroadcast Voicemails)
 // @namespace    http://tampermonkey.net/
-// @version      5.8
+// @version      5.9
 // @downloadURL  https://raw.githubusercontent.com/midsummerred32/tampermonkey-scripts/master/NIIS%20Automation%20(GV%20SMS%20+%20Slybroadcast%20Voicemails)-5.2.user.js
 // @updateURL    https://raw.githubusercontent.com/midsummerred32/tampermonkey-scripts/master/NIIS%20Automation%20(GV%20SMS%20+%20Slybroadcast%20Voicemails)-5.2.user.js
 // @description  Automates NIIS SMS queues and Slybroadcast voicemail lists, with AI-assisted Google Voice scheduling, iCal availability, Telegram approval, and NIIS logging.
@@ -11,6 +11,7 @@
 // @connect      nationalis.com
 // @connect      localhost
 // @connect      127.0.0.1
+// @connect      *
 // @connect      calendar.google.com
 // @connect      api.telegram.org
 // @grant        GM_setValue
@@ -81,6 +82,34 @@
         });
     }
 
+    function parseOllamaEndpoint(value) {
+        const endpoint = new URL(value);
+        if (!['http:', 'https:'].includes(endpoint.protocol)) {
+            throw new Error('Ollama endpoint must use HTTP or HTTPS.');
+        }
+
+        const host = endpoint.hostname.toLowerCase();
+        const isPrivateIpv4 = (() => {
+            const octets = host.split('.');
+            if (octets.length !== 4 || octets.some(octet => !/^\d{1,3}$/.test(octet) || Number(octet) > 255)) {
+                return false;
+            }
+            const [first, second] = octets.map(Number);
+            return first === 10 ||
+                first === 127 ||
+                (first === 172 && second >= 16 && second <= 31) ||
+                (first === 192 && second === 168);
+        })();
+        const isPrivateHostname = ['localhost', '::1', '[::1]'].includes(host) ||
+            host.endsWith('.local') || host.endsWith('.lan') || host.endsWith('.home.arpa');
+        const isPrivateIpv6 = /^\[(?:f[cd][0-9a-f]{2}:|fe[89ab][0-9a-f]:)/i.test(host);
+
+        if (!isPrivateIpv4 && !isPrivateHostname && !isPrivateIpv6) {
+            throw new Error('Ollama endpoint must use localhost or a private LAN IP/hostname (RFC1918, .local, .lan, or .home.arpa).');
+        }
+        return endpoint;
+    }
+
     function openScriptSettings() {
         const overlay = document.createElement('div');
         overlay.style.cssText = 'position:fixed;inset:0;z-index:10001;background:rgba(0,0,0,.45);display:flex;align-items:center;justify-content:center;padding:16px;font:14px Arial,sans-serif;';
@@ -95,7 +124,8 @@
                 <label style="display:block;margin:12px 0 4px">Telegram Chat ID</label>
                 <input name="telegramChatId" type="text" style="box-sizing:border-box;width:100%;padding:8px">
                 <label style="display:block;margin:12px 0 4px">Ollama Endpoint</label>
-                <input name="ollamaUrl" type="url" style="box-sizing:border-box;width:100%;padding:8px">
+                <input name="ollamaUrl" type="url" placeholder="http://192.168.1.25:11434/api/generate" style="box-sizing:border-box;width:100%;padding:8px">
+                <small style="display:block;color:#555">For another PC, use its private LAN IP or local hostname, for example http://192.168.1.25:11434/api/generate. Ollama must listen on the LAN, and its port should be allowed only on your trusted private network—not exposed to the internet.</small>
                 <label style="display:block;margin:12px 0 4px">Ollama Model</label>
                 <input name="ollamaModel" type="text" style="box-sizing:border-box;width:100%;padding:8px">
                 <div style="display:flex;justify-content:flex-end;gap:8px;margin-top:18px">
@@ -207,10 +237,7 @@
             } else {
                 checks.push((async () => {
                     try {
-                        const endpoint = parseHttpUrl(settings.ollamaUrl, 'Ollama endpoint');
-                        if (!['localhost', '127.0.0.1', '[::1]'].includes(endpoint.hostname)) {
-                            throw new Error('Ollama must run locally; client conversation data is not sent to remote hosts.');
-                        }
+                        const endpoint = parseOllamaEndpoint(settings.ollamaUrl);
                         endpoint.pathname = '/api/tags';
                         endpoint.search = '';
                         endpoint.hash = '';
@@ -508,6 +535,11 @@
     }
 
     function generateAIReply(clientMessage, slots) {
+        try {
+            parseOllamaEndpoint(AI_CONFIG.ollamaUrl);
+        } catch (error) {
+            return Promise.reject(new Error(`Invalid Ollama endpoint: ${error.message}`));
+        }
         const prompt = `You are a professional home inspection scheduling assistant.
 A client sent this message: "${clientMessage}".
 Our current confirmed inspection openings are: ${slots}.
@@ -2048,10 +2080,7 @@ Suggest two of these confirmed openings politely, keep the reply to 1-2 friendly
         }
 
         async function generateTelegramMessage(instruction, conversation) {
-            const endpoint = new URL(AI_CONFIG.ollamaUrl);
-            if (!['localhost', '127.0.0.1', '[::1]'].includes(endpoint.hostname)) {
-                throw new Error('Telegram message drafting only sends conversation data to a local Ollama endpoint.');
-            }
+            const endpoint = parseOllamaEndpoint(AI_CONFIG.ollamaUrl);
             const history = conversation.slice(-10).join('\n').slice(-4000);
             const prompt = `You are drafting one short, professional SMS for a home-inspection scheduling assistant.
 The user's instruction is: "${instruction}"
