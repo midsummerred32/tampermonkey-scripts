@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         NIIS Automation (GV SMS + Slybroadcast Voicemails)
 // @namespace    http://tampermonkey.net/
-// @version      5.7
+// @version      5.8
 // @downloadURL  https://raw.githubusercontent.com/midsummerred32/tampermonkey-scripts/master/NIIS%20Automation%20(GV%20SMS%20+%20Slybroadcast%20Voicemails)-5.2.user.js
 // @updateURL    https://raw.githubusercontent.com/midsummerred32/tampermonkey-scripts/master/NIIS%20Automation%20(GV%20SMS%20+%20Slybroadcast%20Voicemails)-5.2.user.js
 // @description  Automates NIIS SMS queues and Slybroadcast voicemail lists, with AI-assisted Google Voice scheduling, iCal availability, Telegram approval, and NIIS logging.
@@ -1757,10 +1757,14 @@ Suggest two of these confirmed openings politely, keep the reply to 1-2 friendly
     if (currentUrl.includes('voice.google.com')) {
 
         let isRunning = false;
+        let isTestSmsRunning = false;
         let skipRequested = false;
+        let testMode = false;
+        const testPhone = '2165092893';
+        const testMessage = 'NIIS Automation test message. No action is needed.';
 
         const container = document.createElement('div');
-        container.style.cssText = 'position:fixed; bottom:20px; right:20px; z-index:9999; display:flex; gap:10px;';
+        container.style.cssText = 'position:fixed; bottom:20px; right:20px; z-index:9999; display:flex; flex-wrap:wrap; justify-content:flex-end; gap:10px; max-width:90vw;';
 
         const btn = document.createElement('button');
         btn.textContent = 'Start Auto-Sending Texts';
@@ -1782,10 +1786,22 @@ Suggest two of these confirmed openings politely, keep the reply to 1-2 friendly
         settingsBtn.textContent = 'Script Settings';
         settingsBtn.style.cssText = 'padding:12px 14px; background:#343a40; color:white; border:none; border-radius:24px; cursor:pointer; font-weight:bold; box-shadow:0 4px 6px rgba(0,0,0,0.2);';
 
+        const testModeBtn = document.createElement('button');
+        testModeBtn.textContent = 'Test Mode: OFF';
+        testModeBtn.title = `When enabled, queue messages go to ${testPhone} and the saved queue is preserved.`;
+        testModeBtn.style.cssText = 'padding:12px 14px;background:#6c757d;color:white;border:0;border-radius:24px;cursor:pointer;font-weight:bold;box-shadow:0 4px 6px rgba(0,0,0,.2);';
+
+        const testMessageBtn = document.createElement('button');
+        testMessageBtn.textContent = 'Send Test SMS';
+        testMessageBtn.title = `Send "${testMessage}" to ${testPhone}.`;
+        testMessageBtn.style.cssText = 'padding:12px 14px;background:#20c997;color:#102a24;border:0;border-radius:24px;cursor:pointer;font-weight:bold;box-shadow:0 4px 6px rgba(0,0,0,.2);';
+
         container.appendChild(btn);
         container.appendChild(manageBtn);
         container.appendChild(skipBtn);
         container.appendChild(clearBtn);
+        container.appendChild(testModeBtn);
+        container.appendChild(testMessageBtn);
         container.appendChild(settingsBtn);
         document.body.appendChild(container);
         injectAICopilotWidget();
@@ -1814,6 +1830,112 @@ Suggest two of these confirmed openings politely, keep the reply to 1-2 friendly
             element.dispatchEvent(new Event('input', { bubbles: true }));
             element.dispatchEvent(new Event('change', { bubbles: true }));
         }
+
+        testModeBtn.addEventListener('click', () => {
+            if (isRunning) {
+                alert('Stop the sender before changing Test Mode.');
+                return;
+            }
+            testMode = !testMode;
+            testModeBtn.textContent = testMode ? `Test Mode: ON (${testPhone})` : 'Test Mode: OFF';
+            testModeBtn.style.background = testMode ? '#dc3545' : '#6c757d';
+        });
+
+        async function sendTestMessage() {
+            if (isRunning || isTestSmsRunning || telegramCommandRunning) {
+                throw new Error('Wait for the current Google Voice send/request to finish before sending a test SMS.');
+            }
+            if (!confirm(`Send this test SMS to ${testPhone}?\n\n"${testMessage}"`)) return false;
+            isTestSmsRunning = true;
+            btn.disabled = true;
+            manageBtn.disabled = true;
+            clearBtn.disabled = true;
+            testModeBtn.disabled = true;
+            testMessageBtn.disabled = true;
+            const originalLabel = testMessageBtn.textContent;
+
+            try {
+                const newMessageButton = document.querySelector('.threads-button[aria-label="Send new message"]');
+                if (!newMessageButton) throw new Error('Could not find Google Voice’s New message button.');
+                newMessageButton.click();
+                await sleep(1000);
+
+                const recipientInput = document.querySelector(
+                    'input[placeholder*="Type a name or phone number" i], input[aria-label*="Type a name or phone number" i]'
+                );
+                if (!recipientInput) throw new Error('Could not find the Google Voice recipient field.');
+                setInputValue(recipientInput, testPhone);
+                recipientInput.dispatchEvent(new KeyboardEvent('keydown', {
+                    key: 'Enter',
+                    keyCode: 13,
+                    code: 'Enter',
+                    bubbles: true
+                }));
+                await sleep(1200);
+
+                const options = Array.from(document.querySelectorAll('mat-option, [role="option"], .send-to-button, .contact-label-item'))
+                    .filter(option => option.getClientRects().length > 0 && !option.hasAttribute('aria-disabled'));
+                const matches = options.filter(option =>
+                    normalizePhone(option.innerText || option.textContent || '').endsWith(testPhone)
+                );
+                if (matches.length !== 1) {
+                    throw new Error(matches.length
+                        ? 'Multiple Google Voice recipients matched the test number.'
+                        : 'Google Voice did not verify a recipient matching the test number.');
+                }
+                matches[0].click();
+                await sleep(1000);
+
+                const field = document.querySelector(
+                    'textarea[aria-label*="Type a message" i], textarea[placeholder*="Type a message" i], textarea#user-input'
+                );
+                if (!field || field.disabled || field.getClientRects().length === 0) {
+                    throw new Error('Could not find an active Google Voice message box.');
+                }
+                setInputValue(field, testMessage);
+                if (field.value !== testMessage) throw new Error('Google Voice did not accept the test message.');
+
+                const control = document.querySelector(
+                    'button[aria-label*="Send message" i], button[mattooltip*="Send" i], .send-button, mat-icon[data-mat-icon-type="font"][aria-label*="send" i]'
+                );
+                const sendButton = control?.matches('button') ? control : control?.closest('button');
+                if (!sendButton || sendButton.disabled || sendButton.getClientRects().length === 0) {
+                    throw new Error('Could not verify an enabled Google Voice Send button.');
+                }
+
+                const normalizeMessage = value => value.replace(/\s+/g, ' ').trim().toLowerCase();
+                const previousCount = getActiveThreadMessages().filter(message =>
+                    normalizeMessage(message).includes(normalizeMessage(testMessage))
+                ).length;
+                sendButton.click();
+                for (let attempt = 0; attempt < 20; attempt++) {
+                    await sleep(500);
+                    const currentCount = getActiveThreadMessages().filter(message =>
+                        normalizeMessage(message).includes(normalizeMessage(testMessage))
+                    ).length;
+                    if (currentCount > previousCount) return true;
+                }
+                throw new Error('Send was clicked, but the test message was not confirmed. Check the conversation before retrying.');
+            } finally {
+                isTestSmsRunning = false;
+                btn.disabled = false;
+                manageBtn.disabled = false;
+                clearBtn.disabled = false;
+                testModeBtn.disabled = false;
+                testMessageBtn.disabled = false;
+                testMessageBtn.textContent = originalLabel;
+            }
+        }
+
+        testMessageBtn.addEventListener('click', async () => {
+            try {
+                const sent = await sendTestMessage();
+                if (sent) alert(`Test SMS confirmed in the Google Voice conversation for ${testPhone}.`);
+            } catch (error) {
+                console.error('[Test Mode] Test SMS failed:', error);
+                alert(`Test SMS could not be confirmed:\n${error.message}`);
+            }
+        });
 
         GM_addValueChangeListener('latest_telegram_order_result', (_name, _oldValue, result) => {
             if (!result?.id) return;
@@ -2044,6 +2166,10 @@ Write only the SMS body that carries out the user's instruction. Use the convers
         }
 
         async function processTelegramRequest(text) {
+            if (isTestSmsRunning) {
+                await sendTelegramNotice('A test SMS is currently in progress. Wait for it to finish before sending another request.');
+                return;
+            }
             if (isRunning) {
                 await sendTelegramNotice('The Google Voice queue is already running. Wait for it to finish before sending another request.');
                 return;
@@ -2200,37 +2326,53 @@ Write only the SMS body that carries out the user's instruction. Use the convers
                 btn.style.background = '#6c757d';
                 return;
             }
+            if (isTestSmsRunning) {
+                alert('Wait for the test SMS to finish before starting the queue.');
+                return;
+            }
 
             let queue = GM_getValue('gv_sms_queue', []);
+            if (!Array.isArray(queue)) queue = [];
+            if (testMode) queue = queue.map(item => ({ ...item }));
 
             if (!queue || queue.length === 0) {
                 alert('Queue is empty! Queue up messages on the NIIS tab first.');
                 return;
             }
+            if (testMode && !confirm(
+                `Test Mode is ON.\n\n${queue.length} queued message(s) will be sent to ${testPhone}. ` +
+                'The saved queue will not be changed, and test sends will not be logged to NIIS.\n\nContinue?'
+            )) return;
 
             isRunning = true;
             manageBtn.disabled = true;
             clearBtn.disabled = true;
+            testModeBtn.disabled = true;
+            testMessageBtn.disabled = true;
             btn.style.background = '#ffc107';
             btn.style.color = '#000';
             let failureMessage = '';
+            const advanceQueue = () => {
+                queue.shift();
+                if (!testMode) GM_setValue('gv_sms_queue', queue);
+            };
 
             while (queue.length > 0 && isRunning) {
                 skipRequested = false;
                 const currentItem = queue[0];
-                btn.textContent = `Stop (${queue.length} left) - Sending to ${currentItem.phone}...`;
+                const recipientPhone = testMode ? testPhone : currentItem.phone;
+                btn.textContent = `Stop (${queue.length} left) - Sending to ${recipientPhone}...`;
 
                 try {
                     if (!isRunning || skipRequested) {
                         if (skipRequested) {
-                            queue.shift();
-                            GM_setValue('gv_sms_queue', queue);
+                            advanceQueue();
                             continue;
                         }
                         break;
                     }
 
-                    const targetPhone = normalizePhone(currentItem.phone);
+                    const targetPhone = normalizePhone(recipientPhone);
                     if (targetPhone.length !== 10 || !String(currentItem.message || '').trim()) {
                         throw new Error(`Order ${currentItem.orderId} has an invalid phone number or empty message.`);
                     }
@@ -2242,8 +2384,7 @@ Write only the SMS body that carries out the user's instruction. Use the convers
 
                     if (!isRunning || skipRequested) {
                         if (skipRequested) {
-                            queue.shift();
-                            GM_setValue('gv_sms_queue', queue);
+                            advanceQueue();
                             continue;
                         }
                         break;
@@ -2254,7 +2395,7 @@ Write only the SMS body that carries out the user's instruction. Use the convers
                     );
                     if (!recipientInput) throw new Error('Could not find the Google Voice recipient field; the item remains queued.');
 
-                    setInputValue(recipientInput, currentItem.phone);
+                    setInputValue(recipientInput, recipientPhone);
                     await sleep(1000);
                     recipientInput.dispatchEvent(new KeyboardEvent('keydown', {
                         key: 'Enter',
@@ -2285,8 +2426,7 @@ Write only the SMS body that carries out the user's instruction. Use the convers
 
                     if (!isRunning || skipRequested) {
                         if (skipRequested) {
-                            queue.shift();
-                            GM_setValue('gv_sms_queue', queue);
+                            advanceQueue();
                             continue;
                         }
                         break;
@@ -2306,8 +2446,7 @@ Write only the SMS body that carries out the user's instruction. Use the convers
                     await sleep(500);
 
                     if (skipRequested) {
-                        queue.shift();
-                        GM_setValue('gv_sms_queue', queue);
+                        advanceQueue();
                         continue;
                     }
 
@@ -2340,13 +2479,14 @@ Write only the SMS body that carries out the user's instruction. Use the convers
                         throw new Error('Send was clicked, but the message was not confirmed in the conversation. Verify before retrying; the item remains queued.');
                     }
 
-                    console.log(`✅ Confirmed SMS to ${currentItem.phone}. Logging to NIIS now...`);
-                    const logged = await logToNIIS(currentItem.orderId, currentItem.clientId, 'Left message.');
-                    if (!logged) {
-                        console.error(`[NIIS] SMS was sent to ${currentItem.phone}, but logging failed for order ${currentItem.orderId}.`);
+                    console.log(`✅ Confirmed ${testMode ? 'TEST ' : ''}SMS to ${recipientPhone}.`);
+                    if (!testMode) {
+                        const logged = await logToNIIS(currentItem.orderId, currentItem.clientId, 'Left message.');
+                        if (!logged) {
+                            console.error(`[NIIS] SMS was sent to ${currentItem.phone}, but logging failed for order ${currentItem.orderId}.`);
+                        }
                     }
-                    queue.shift();
-                    GM_setValue('gv_sms_queue', queue);
+                    advanceQueue();
 
                 } catch (err) {
                     console.error(`❌ Error processing ${currentItem.phone}:`, err);
@@ -2370,9 +2510,12 @@ Write only the SMS body that carries out the user's instruction. Use the convers
             isRunning = false;
             manageBtn.disabled = false;
             clearBtn.disabled = false;
+            testModeBtn.disabled = false;
+            testMessageBtn.disabled = false;
             btn.textContent = failureMessage
                 ? `Paused: ${failureMessage}`
-                : queue.length === 0 ? 'Queue Finished!' : 'Resume Auto-Sending';
+                : testMode ? 'Test Run Finished; queue preserved'
+                    : queue.length === 0 ? 'Queue Finished!' : 'Resume Auto-Sending';
             btn.style.background = '#1a73e8';
             btn.style.color = '#fff';
             if (failureMessage) {
