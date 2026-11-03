@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         NIIS Automation (GV SMS + Slybroadcast Voicemails)
 // @namespace    http://tampermonkey.net/
-// @version      5.12
+// @version      5.13
 // @downloadURL  https://raw.githubusercontent.com/midsummerred32/tampermonkey-scripts/master/NIIS%20Automation%20(GV%20SMS%20+%20Slybroadcast%20Voicemails)-5.2.user.js
 // @updateURL    https://raw.githubusercontent.com/midsummerred32/tampermonkey-scripts/master/NIIS%20Automation%20(GV%20SMS%20+%20Slybroadcast%20Voicemails)-5.2.user.js
 // @description  Automates NIIS SMS queues and Slybroadcast voicemail lists, with AI-assisted Google Voice scheduling, iCal availability, Telegram approval, and NIIS logging.
@@ -793,6 +793,28 @@ Suggest two of these confirmed openings politely, keep the reply to 1-2 friendly
         return Array.from(document.querySelectorAll('gv-text-message-item, div[gv-test-id="item-view"]'))
             .map(message => message.innerText.trim())
             .filter(Boolean);
+    }
+
+    function normalizeGoogleVoiceMessage(message) {
+        return String(message || '').replace(/\s+/g, ' ').trim().toLowerCase();
+    }
+
+    async function waitForGoogleVoiceMessageConfirmation(messageBox, message, priorCount, timeoutMs = 10000) {
+        const expectedMessage = normalizeGoogleVoiceMessage(message);
+        const deadline = Date.now() + timeoutMs;
+        while (true) {
+            const matchingMessages = getActiveThreadMessages().filter(existing =>
+                normalizeGoogleVoiceMessage(existing).includes(expectedMessage)
+            );
+            if (matchingMessages.length > priorCount) return true;
+
+            if (messageBox.isConnected && typeof messageBox.value === 'string' && !messageBox.value.trim()) {
+                return true;
+            }
+            const remainingMs = deadline - Date.now();
+            if (remainingMs <= 0) return false;
+            await new Promise(resolve => setTimeout(resolve, Math.min(300, remainingMs)));
+        }
     }
 
     function getGoogleVoiceSendButton(messageBox) {
@@ -1847,7 +1869,13 @@ Suggest two of these confirmed openings politely, keep the reply to 1-2 friendly
                     return;
                 }
 
+                const priorMessages = getActiveThreadMessages().filter(existing =>
+                    normalizeGoogleVoiceMessage(existing).includes(normalizeGoogleVoiceMessage(reply))
+                ).length;
                 sendButton.click();
+                if (!await waitForGoogleVoiceMessageConfirmation(field, reply, priorMessages)) {
+                    throw new Error('Send was clicked, but Google Voice did not confirm the message. Verify the conversation before retrying.');
+                }
                 broadcastAIAttemptToNIIS({
                     phone: client.phone,
                     clientName: client.name,
@@ -2030,18 +2058,11 @@ Suggest two of these confirmed openings politely, keep the reply to 1-2 friendly
                     throw new Error('Could not verify an enabled Google Voice Send button.');
                 }
 
-                const normalizeMessage = value => value.replace(/\s+/g, ' ').trim().toLowerCase();
                 const previousCount = getActiveThreadMessages().filter(message =>
-                    normalizeMessage(message).includes(normalizeMessage(testMessage))
+                    normalizeGoogleVoiceMessage(message).includes(normalizeGoogleVoiceMessage(testMessage))
                 ).length;
                 sendButton.click();
-                for (let attempt = 0; attempt < 20; attempt++) {
-                    await sleep(500);
-                    const currentCount = getActiveThreadMessages().filter(message =>
-                        normalizeMessage(message).includes(normalizeMessage(testMessage))
-                    ).length;
-                    if (currentCount > previousCount) return true;
-                }
+                if (await waitForGoogleVoiceMessageConfirmation(field, testMessage, previousCount)) return true;
                 throw new Error('Send was clicked, but the test message was not confirmed. Check the conversation before retrying.');
             } finally {
                 isTestSmsRunning = false;
@@ -2237,9 +2258,8 @@ Write only the SMS body that carries out the user's instruction. Use the convers
             if (!field || field.disabled || field.getClientRects().length === 0) {
                 throw new Error('Could not find an active Google Voice message box.');
             }
-            const normalizeMessage = value => value.replace(/\s+/g, ' ').trim().toLowerCase();
             const priorMessages = getActiveThreadMessages().filter(existing =>
-                normalizeMessage(existing).includes(normalizeMessage(message))
+                normalizeGoogleVoiceMessage(existing).includes(normalizeGoogleVoiceMessage(message))
             ).length;
             setInputValue(field, message);
             if (field.value !== message) throw new Error('Google Voice did not accept the approved message.');
@@ -2250,18 +2270,9 @@ Write only the SMS body that carries out the user's instruction. Use the convers
             }
 
             sendButton.click();
-            let confirmed = false;
-            for (let attempt = 0; attempt < 20; attempt++) {
-                await sleep(500);
-                const matches = getActiveThreadMessages().filter(existing =>
-                    normalizeMessage(existing).includes(normalizeMessage(message))
-                );
-                if (matches.length > priorMessages) {
-                    confirmed = true;
-                    break;
-                }
+            if (!await waitForGoogleVoiceMessageConfirmation(field, message, priorMessages)) {
+                throw new Error('Send was clicked but the message could not be confirmed. Verify the conversation before retrying.');
             }
-            if (!confirmed) throw new Error('Send was clicked but the message could not be confirmed. Verify the conversation before retrying.');
             if (orderId && !await logToNIIS(orderId, clientId, `Telegram-requested SMS: ${instruction.slice(0, 100)}`)) {
                 console.error(`[Telegram] SMS was sent, but NIIS logging failed for order ${orderId}.`);
             }
@@ -2576,22 +2587,11 @@ Write only the SMS body that carries out the user's instruction. Use the convers
                         throw new Error('Could not verify an enabled Google Voice Send button; the item remains queued.');
                     }
 
-                    const normalizeMessage = message => message.replace(/\s+/g, ' ').trim().toLowerCase();
-                    const expectedMessage = normalizeMessage(currentItem.message);
                     const priorMatchingMessages = getActiveThreadMessages().filter(message =>
-                        normalizeMessage(message).includes(expectedMessage)
+                        normalizeGoogleVoiceMessage(message).includes(normalizeGoogleVoiceMessage(currentItem.message))
                     ).length;
                     sendButton.click();
-                    let messageAppeared = false;
-                    for (let attempt = 0; attempt < 20; attempt++) {
-                        await sleep(500);
-                        const matchingMessages = getActiveThreadMessages().filter(message =>
-                            normalizeMessage(message).includes(expectedMessage)
-                        );
-                        messageAppeared = matchingMessages.length > priorMatchingMessages;
-                        if (messageAppeared) break;
-                    }
-                    if (!messageAppeared) {
+                    if (!await waitForGoogleVoiceMessageConfirmation(messageBox, currentItem.message, priorMatchingMessages)) {
                         throw new Error('Send was clicked, but the message was not confirmed in the conversation. Verify before retrying; the item remains queued.');
                     }
 
