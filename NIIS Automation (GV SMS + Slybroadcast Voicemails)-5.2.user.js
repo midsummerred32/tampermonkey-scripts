@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         NIIS Automation (GV SMS + Slybroadcast Voicemails)
 // @namespace    http://tampermonkey.net/
-// @version      5.14
+// @version      5.15
 // @downloadURL  https://raw.githubusercontent.com/midsummerred32/tampermonkey-scripts/master/NIIS%20Automation%20(GV%20SMS%20+%20Slybroadcast%20Voicemails)-5.2.user.js
 // @updateURL    https://raw.githubusercontent.com/midsummerred32/tampermonkey-scripts/master/NIIS%20Automation%20(GV%20SMS%20+%20Slybroadcast%20Voicemails)-5.2.user.js
 // @description  Automates NIIS SMS queues and Slybroadcast voicemail lists, with AI-assisted Google Voice scheduling, iCal availability, Telegram approval, and NIIS logging.
@@ -892,7 +892,11 @@ Suggest two of these confirmed openings politely, keep the reply to 1-2 friendly
             ]);
             const candidates = new Set();
             for (const value of values) {
-                const matches = String(value || '').match(/(?:\+?1[\s().-]*)?\(?\d{3}\)?[\s.-]*\d{3}[\s.-]*\d{4}/g) || [];
+                const text = String(value || '');
+                const matches = [
+                    ...(text.match(/(?:\+?1[\s().-]*)?\(?\d{3}\)?[\s.-]*\d{3}[\s.-]*\d{4}/g) || []),
+                    ...(text.match(/(?<!\d)(?:\+?1[\s().-]*)?(?:\d[\s().-]*){10}(?!\d)/g) || [])
+                ];
                 for (const match of matches) {
                     const digits = normalizePhone(match);
                     if (digits.length === 10) candidates.add(digits);
@@ -907,6 +911,12 @@ Suggest two of these confirmed openings politely, keep the reply to 1-2 friendly
             : Array.from(document.querySelectorAll('header'))
                 .filter(header => visible(header) && header.querySelector('h1, [role="heading"]'));
         let phoneCandidates = pageHeaders.flatMap(getPhoneCandidates);
+
+        if (phoneCandidates.length === 0) {
+            const threadDetails = Array.from(document.querySelectorAll('gv-thread-details'))
+                .find(visible);
+            phoneCandidates = getPhoneCandidates(threadDetails);
+        }
 
         if (phoneCandidates.length === 0) {
             const activeConversationItems = Array.from(document.querySelectorAll(
