@@ -190,6 +190,9 @@
                     <h3 style="margin: 0; font-size: 18px;">📋 SMS Queue Manager</h3>
                     <button id="close-modal-btn" style="background: transparent; border: none; color: white; font-size: 20px; cursor: pointer; font-weight: bold;">&times;</button>
                 </div>
+                <div style="padding: 12px 20px 0;">
+                    <input id="queue-search-input" type="search" placeholder="Search by name, address, or phone" style="box-sizing: border-box; width: 100%; padding: 9px 10px; border: 1px solid #ced4da; border-radius: 4px; font-size: 14px;">
+                </div>
                 <div id="modal-queue-list" style="padding: 20px; overflow-y: auto; flex-grow: 1;">
                     <!-- Dynamic Queue Content -->
                 </div>
@@ -204,6 +207,7 @@
 
         document.getElementById('close-modal-btn').onclick = () => modal.style.display = 'none';
         document.getElementById('modal-done-btn').onclick = () => modal.style.display = 'none';
+        document.getElementById('queue-search-input').addEventListener('input', renderQueueModal);
 
         const purgeModalBtn = document.getElementById('modal-purge-appt-btn');
         if (purgeModalBtn) {
@@ -218,12 +222,19 @@
         createQueueModal();
         const modal = document.getElementById('gv-queue-modal');
         const listContainer = document.getElementById('modal-queue-list');
+        const searchQuery = document.getElementById('queue-search-input').value.trim().toLowerCase();
         let queue = GM_getValue('gv_sms_queue', []);
+        const visibleItems = queue
+            .map((item, index) => ({ item, index }))
+            .filter(({ item }) => [item.name, item.searchText, item.location, item.phone, item.message]
+                .some(value => String(value || '').toLowerCase().includes(searchQuery)));
 
         if (queue.length === 0) {
             listContainer.innerHTML = '<p style="text-align: center; color: #6c757d; font-size: 16px; padding: 20px;">The queue is currently empty.</p>';
+        } else if (visibleItems.length === 0) {
+            listContainer.innerHTML = '<p style="text-align: center; color: #6c757d; font-size: 16px; padding: 20px;">No matching queue items.</p>';
         } else {
-            listContainer.innerHTML = queue.map((item, index) => `
+            listContainer.innerHTML = visibleItems.map(({ item, index }) => `
                 <div style="border: 1px solid #e0e0e0; border-radius: 6px; padding: 12px 15px; margin-bottom: 12px; background: #fdfdfd; display: flex; flex-direction: column; gap: 8px;">
                     <div style="display: flex; justify-content: space-between; align-items: center; border-bottom: 1px solid #eee; padding-bottom: 6px;">
                         <span style="font-weight: bold; color: #1a73e8;">#${index + 1} | Order ID: ${item.orderId || 'N/A'}</span>
@@ -258,15 +269,23 @@
 
                     const newPhone = prompt("Edit Phone Number:", item.phone);
                     if (newPhone === null) return;
+                    currentQueue[idx].phone = newPhone.trim();
+                    GM_setValue('gv_sms_queue', currentQueue);
 
                     const newAddress = prompt("Edit Property Address:", item.location);
-                    if (newAddress === null) return;
+                    if (newAddress === null) {
+                        renderQueueModal();
+                        return;
+                    }
+                    currentQueue[idx].location = newAddress.trim();
+                    GM_setValue('gv_sms_queue', currentQueue);
 
                     const newMessage = prompt("Edit Message Text:", item.message);
-                    if (newMessage === null) return;
+                    if (newMessage === null) {
+                        renderQueueModal();
+                        return;
+                    }
 
-                    currentQueue[idx].phone = newPhone.trim();
-                    currentQueue[idx].location = newAddress.trim();
                     currentQueue[idx].message = newMessage.trim();
 
                     GM_setValue('gv_sms_queue', currentQueue);
@@ -608,7 +627,14 @@
                         const textBody = buildMessage(countyType, formattedAddress);
 
                         if (!queue.some(item => item.orderId === orderId)) {
-                            queue.push({ phone, message: textBody, orderId, clientId, location: formattedAddress });
+                            queue.push({
+                                phone,
+                                message: textBody,
+                                orderId,
+                                clientId,
+                                location: formattedAddress,
+                                searchText: row.innerText || row.textContent || ''
+                            });
                             addedCount++;
                         }
                     }
