@@ -2046,7 +2046,7 @@ Suggest two of these confirmed openings politely, keep the reply to 1-2 friendly
 
         const replyMonitorBtn = document.createElement('button');
         replyMonitorBtn.textContent = 'Telegram Reply Monitor: OFF';
-        replyMonitorBtn.title = 'When enabled, scans visible unread conversations every minute and asks Telegram to approve replies. It never sends without approval.';
+        replyMonitorBtn.title = 'When enabled, scans unread conversations every minute and asks Telegram to approve replies. It never sends without approval.';
         replyMonitorBtn.style.cssText = 'padding:12px 14px;background:#6c757d;color:white;border:0;border-radius:24px;cursor:pointer;font-weight:bold;box-shadow:0 4px 6px rgba(0,0,0,.2);';
 
         container.appendChild(btn);
@@ -2446,7 +2446,7 @@ ${JSON.stringify(conversation.slice(-10).map(message => ({
                 : 'Telegram Reply Monitor: OFF';
             replyMonitorBtn.style.background = replyMonitorEnabled ? '#198754' : '#6c757d';
             replyMonitorBtn.title = replyMonitorEnabled
-                ? 'Scanning visible unread conversations once per minute. Replies are sent only after Telegram approval.'
+                ? 'Scanning unread conversations once per minute, up to five per pass. Replies are sent only after Telegram approval.'
                 : 'Enable to scan unread conversations for messages that may need a response. No message is sent without Telegram approval.';
         }
 
@@ -2697,7 +2697,7 @@ ${JSON.stringify(conversation.slice(-10).map(message => ({
                 }
                 updateReplyMonitorButton(draftsSent
                     ? `${draftsSent} draft(s) sent to Telegram`
-                    : inspectedRows >= 5 ? 'more unread messages next scan' : 'up to date');
+                    : inspectedRows >= 5 || scrollSteps >= 60 ? 'more unread messages next scan' : 'up to date');
             } catch (error) {
                 console.error('[GV Reply Monitor] Scan failed:', error);
                 updateReplyMonitorButton('scan failed');
