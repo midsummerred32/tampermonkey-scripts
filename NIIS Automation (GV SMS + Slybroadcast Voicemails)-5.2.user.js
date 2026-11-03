@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         NIIS Automation (GV SMS + Slybroadcast Voicemails)
 // @namespace    http://tampermonkey.net/
-// @version      5.4
+// @version      5.5
 // @downloadURL  https://raw.githubusercontent.com/midsummerred32/tampermonkey-scripts/master/NIIS%20Automation%20(GV%20SMS%20+%20Slybroadcast%20Voicemails)-5.2.user.js
 // @updateURL    https://raw.githubusercontent.com/midsummerred32/tampermonkey-scripts/master/NIIS%20Automation%20(GV%20SMS%20+%20Slybroadcast%20Voicemails)-5.2.user.js
 // @description  Automates NIIS SMS queues and Slybroadcast voicemail lists, with AI-assisted Google Voice scheduling, iCal availability, Telegram approval, and NIIS logging.
@@ -68,6 +68,56 @@
         GM_setValue('ollamaModel', AI_CONFIG.ollamaModel);
         alert('Ollama settings saved.');
     });
+
+    function openScriptSettings() {
+        const overlay = document.createElement('div');
+        overlay.style.cssText = 'position:fixed;inset:0;z-index:10001;background:rgba(0,0,0,.45);display:flex;align-items:center;justify-content:center;padding:16px;font:14px Arial,sans-serif;';
+        overlay.innerHTML = `
+            <form style="box-sizing:border-box;width:min(440px,100%);max-height:90vh;overflow:auto;background:#fff;padding:20px;border-radius:10px;box-shadow:0 6px 24px rgba(0,0,0,.25);">
+                <h2 style="margin:0 0 8px">NIIS Automation Settings</h2>
+                <p style="margin:0 0 16px;color:#555">Save settings here on the page; you do not need to find them in Tampermonkey's settings.</p>
+                <label style="display:block;margin:12px 0 4px">Google Calendar Secret iCal URL</label>
+                <input name="icalUrl" type="url" style="box-sizing:border-box;width:100%;padding:8px">
+                <label style="display:block;margin:12px 0 4px">Telegram Bot Token</label>
+                <input name="telegramToken" type="password" autocomplete="off" style="box-sizing:border-box;width:100%;padding:8px">
+                <label style="display:block;margin:12px 0 4px">Telegram Chat ID</label>
+                <input name="telegramChatId" type="text" style="box-sizing:border-box;width:100%;padding:8px">
+                <label style="display:block;margin:12px 0 4px">Ollama Endpoint</label>
+                <input name="ollamaUrl" type="url" style="box-sizing:border-box;width:100%;padding:8px">
+                <label style="display:block;margin:12px 0 4px">Ollama Model</label>
+                <input name="ollamaModel" type="text" style="box-sizing:border-box;width:100%;padding:8px">
+                <div style="display:flex;justify-content:flex-end;gap:8px;margin-top:18px">
+                    <button type="button" data-cancel style="padding:8px 14px">Cancel</button>
+                    <button type="submit" style="padding:8px 14px;background:#1a73e8;color:#fff;border:0;border-radius:4px">Save Settings</button>
+                </div>
+            </form>
+        `;
+
+        const form = overlay.querySelector('form');
+        form.elements.icalUrl.value = AI_CONFIG.icalUrl;
+        form.elements.telegramToken.value = AI_CONFIG.telegramToken;
+        form.elements.telegramChatId.value = AI_CONFIG.telegramChatId;
+        form.elements.ollamaUrl.value = AI_CONFIG.ollamaUrl;
+        form.elements.ollamaModel.value = AI_CONFIG.ollamaModel;
+
+        const close = () => overlay.remove();
+        overlay.querySelector('[data-cancel]').addEventListener('click', close);
+        overlay.addEventListener('click', event => {
+            if (event.target === overlay) close();
+        });
+        form.addEventListener('submit', event => {
+            event.preventDefault();
+            for (const key of ['icalUrl', 'telegramToken', 'telegramChatId', 'ollamaUrl', 'ollamaModel']) {
+                AI_CONFIG[key] = form.elements[key].value.trim();
+                GM_setValue(key, AI_CONFIG[key]);
+            }
+            close();
+            alert('Settings saved.');
+        });
+        document.body.appendChild(overlay);
+    }
+
+    GM_registerMenuCommand('Open NIIS Automation Settings', openScriptSettings);
 
     function getTodayKey() {
         const d = new Date();
@@ -248,7 +298,7 @@
     function fetchBusyEvents() {
         return new Promise((resolve, reject) => {
             if (!AI_CONFIG.icalUrl) {
-                reject(new Error('Configure your Google Calendar iCal URL from the Tampermonkey menu first.'));
+                reject(new Error('Add your Google Calendar iCal URL using the NIIS Automation Settings button.'));
                 return;
             }
 
@@ -362,7 +412,7 @@ Suggest two of these confirmed openings politely, keep the reply to 1-2 friendly
 
     function sendTelegramApprovalRequest(client, clientText, draft, callbackId) {
         if (!AI_CONFIG.telegramToken || !AI_CONFIG.telegramChatId) {
-            return Promise.reject(new Error('Configure the Telegram bot token and chat ID from the Tampermonkey menu first.'));
+            return Promise.reject(new Error('Add your Telegram bot token and chat ID using the NIIS Automation Settings button.'));
         }
 
         return new Promise((resolve, reject) => {
@@ -870,6 +920,10 @@ Suggest two of these confirmed openings politely, keep the reply to 1-2 friendly
         syncLogsBtn.textContent = 'Sync & Audit Logs';
         syncLogsBtn.style.cssText = 'padding:10px 14px; background:#fd7e14; color:white; border:none; border-radius:4px; cursor:pointer; font-weight:bold;';
 
+        const settingsBtn = document.createElement('button');
+        settingsBtn.textContent = 'Script Settings';
+        settingsBtn.style.cssText = 'padding:10px 14px; background:#343a40; color:white; border:none; border-radius:4px; cursor:pointer; font-weight:bold;';
+
         container.appendChild(btn);
         container.appendChild(overrideBtn);
         container.appendChild(vmBtn);
@@ -877,7 +931,119 @@ Suggest two of these confirmed openings politely, keep the reply to 1-2 friendly
         container.appendChild(editQueueBtn);
         container.appendChild(removeApptBtn);
         container.appendChild(syncLogsBtn);
+        container.appendChild(settingsBtn);
         document.body.appendChild(container);
+
+        settingsBtn.addEventListener('click', openScriptSettings);
+
+        const orderSearchPanel = document.createElement('section');
+        orderSearchPanel.style.cssText = 'position:fixed;top:55px;left:10px;z-index:9998;width:min(360px,calc(100vw - 20px));max-height:75vh;box-sizing:border-box;padding:12px;background:#fff;border:1px solid #adb5bd;border-radius:8px;box-shadow:0 3px 12px rgba(0,0,0,.2);font:13px Arial,sans-serif;';
+        orderSearchPanel.innerHTML = `
+            <form style="display:flex;gap:6px">
+                <input type="search" aria-label="Search all listed orders" placeholder="Search all orders by name, address, or phone" style="box-sizing:border-box;min-width:0;flex:1;padding:8px">
+                <button type="submit" style="padding:8px 10px">Search</button>
+            </form>
+            <div aria-live="polite" style="margin-top:8px;color:#555"></div>
+            <ul style="margin:8px 0 0;padding-left:20px;max-height:55vh;overflow:auto"></ul>
+        `;
+        document.body.appendChild(orderSearchPanel);
+
+        const orderSearchForm = orderSearchPanel.querySelector('form');
+        const orderSearchInput = orderSearchPanel.querySelector('input');
+        const orderSearchStatus = orderSearchPanel.querySelector('[aria-live]');
+        const orderSearchResults = orderSearchPanel.querySelector('ul');
+        const orderDetailsCache = new Map();
+        let orderSearchRun = 0;
+
+        function normalizeOrderSearchText(value) {
+            return value.normalize('NFKD').replace(/[\u0300-\u036f]/g, '').toLowerCase().replace(/[^a-z0-9]/g, '');
+        }
+
+        orderSearchForm.addEventListener('submit', async event => {
+            event.preventDefault();
+            const queryTerms = orderSearchInput.value.trim().split(/\s+/).map(normalizeOrderSearchText).filter(Boolean);
+            const runId = ++orderSearchRun;
+            orderSearchResults.replaceChildren();
+
+            if (queryTerms.length === 0) {
+                orderSearchStatus.textContent = 'Enter a name, address, or phone number to search.';
+                return;
+            }
+
+            const rowsByOrderId = new Map();
+            for (const row of document.querySelectorAll('div.hoverRow[data-ordid], tr[data-ordid]')) {
+                const orderId = row.getAttribute('data-ordid');
+                if (orderId && !rowsByOrderId.has(orderId)) rowsByOrderId.set(orderId, row);
+            }
+
+            const rows = [...rowsByOrderId.entries()];
+            if (rows.length === 0) {
+                orderSearchStatus.textContent = 'No orders are listed on this NIIS page.';
+                return;
+            }
+
+            orderSearchForm.querySelector('button').disabled = true;
+            orderSearchStatus.textContent = `Searching ${rows.length} listed orders...`;
+            let completed = 0;
+            let failed = 0;
+            let nextIndex = 0;
+            const matches = [];
+
+            async function searchNextOrder() {
+                while (nextIndex < rows.length && runId === orderSearchRun) {
+                    const [orderId, row] = rows[nextIndex++];
+                    try {
+                        let detailText = orderDetailsCache.get(orderId);
+                        if (detailText === undefined) {
+                            const response = await fetch(`/ssecure/recordlog/form.cfm?id=${encodeURIComponent(orderId)}&appt=`, {
+                                credentials: 'same-origin'
+                            });
+                            if (!response.ok) throw new Error(`HTTP ${response.status}`);
+                            const html = await response.text();
+                            const detailDoc = new DOMParser().parseFromString(html, 'text/html');
+                            detailDoc.querySelectorAll('script, style').forEach(element => element.remove());
+                            detailText = detailDoc.body.textContent || '';
+                            orderDetailsCache.set(orderId, detailText);
+                        }
+
+                        const rowText = row.innerText || row.textContent || '';
+                        const searchableText = normalizeOrderSearchText(`${rowText} ${detailText}`);
+                        if (queryTerms.every(term => searchableText.includes(term))) {
+                            matches.push({ orderId, rowText: rowText.replace(/\s+/g, ' ').trim() });
+                        }
+                    } catch (error) {
+                        failed++;
+                        console.error(`[NIIS Search] Could not search order ${orderId}:`, error);
+                    }
+
+                    completed++;
+                    if (runId === orderSearchRun) {
+                        orderSearchStatus.textContent = `Searching orders: ${completed}/${rows.length}`;
+                    }
+                }
+            }
+
+            try {
+                await Promise.all(Array.from({ length: Math.min(4, rows.length) }, () => searchNextOrder()));
+                if (runId !== orderSearchRun) return;
+
+                matches.sort((a, b) => a.orderId.localeCompare(b.orderId, undefined, { numeric: true }));
+                for (const match of matches) {
+                    const item = document.createElement('li');
+                    const link = document.createElement('a');
+                    link.href = `/ssecure/recordlog/form.cfm?id=${encodeURIComponent(match.orderId)}&appt=`;
+                    link.target = '_blank';
+                    link.rel = 'noopener';
+                    link.textContent = `Order ${match.orderId}: ${match.rowText || 'Open order details'}`;
+                    item.appendChild(link);
+                    orderSearchResults.appendChild(item);
+                }
+
+                orderSearchStatus.textContent = `${matches.length} match${matches.length === 1 ? '' : 'es'} found${failed ? `; ${failed} order${failed === 1 ? '' : 's'} could not be searched` : ''}. Search covers orders currently listed on this NIIS page.`;
+            } finally {
+                if (runId === orderSearchRun) orderSearchForm.querySelector('button').disabled = false;
+            }
+        });
 
         overrideBtn.addEventListener('click', () => {
             forceOverride = !forceOverride;
@@ -1155,7 +1321,7 @@ Suggest two of these confirmed openings politely, keep the reply to 1-2 friendly
             try {
                 const { reply, clientMessage, client, field } = await createDraft();
                 if (!AI_CONFIG.telegramToken || !AI_CONFIG.telegramChatId) {
-                    throw new Error('Configure Telegram credentials from the Tampermonkey menu first.');
+                    throw new Error('Add your Telegram credentials using the NIIS Automation Settings button.');
                 }
                 if (!normalizePhone(client.phone)) {
                     throw new Error('Could not identify the client phone number for Telegram approval.');
@@ -1258,14 +1424,20 @@ Suggest two of these confirmed openings politely, keep the reply to 1-2 friendly
         clearBtn.textContent = 'Clear Queue';
         clearBtn.style.cssText = 'padding:12px 14px; background:#dc3545; color:white; border:none; border-radius:24px; cursor:pointer; font-weight:bold; box-shadow: 0 4px 6px rgba(0,0,0,0.2);';
 
+        const settingsBtn = document.createElement('button');
+        settingsBtn.textContent = 'Script Settings';
+        settingsBtn.style.cssText = 'padding:12px 14px; background:#343a40; color:white; border:none; border-radius:24px; cursor:pointer; font-weight:bold; box-shadow:0 4px 6px rgba(0,0,0,0.2);';
+
         container.appendChild(btn);
         container.appendChild(manageBtn);
         container.appendChild(skipBtn);
         container.appendChild(clearBtn);
+        container.appendChild(settingsBtn);
         document.body.appendChild(container);
         injectAICopilotWidget();
 
         manageBtn.addEventListener('click', renderQueueModal);
+        settingsBtn.addEventListener('click', openScriptSettings);
 
         const sleep = (ms) => new Promise(r => setTimeout(r, ms));
 
