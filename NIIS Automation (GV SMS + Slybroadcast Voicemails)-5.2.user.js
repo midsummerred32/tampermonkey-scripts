@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         NIIS Automation (GV SMS + Slybroadcast Voicemails)
 // @namespace    http://tampermonkey.net/
-// @version      5.9
+// @version      5.10
 // @downloadURL  https://raw.githubusercontent.com/midsummerred32/tampermonkey-scripts/master/NIIS%20Automation%20(GV%20SMS%20+%20Slybroadcast%20Voicemails)-5.2.user.js
 // @updateURL    https://raw.githubusercontent.com/midsummerred32/tampermonkey-scripts/master/NIIS%20Automation%20(GV%20SMS%20+%20Slybroadcast%20Voicemails)-5.2.user.js
 // @description  Automates NIIS SMS queues and Slybroadcast voicemail lists, with AI-assisted Google Voice scheduling, iCal availability, Telegram approval, and NIIS logging.
@@ -793,6 +793,65 @@ Suggest two of these confirmed openings politely, keep the reply to 1-2 friendly
         return Array.from(document.querySelectorAll('gv-text-message-item, div[gv-test-id="item-view"]'))
             .map(message => message.innerText.trim())
             .filter(Boolean);
+    }
+
+    function getGoogleVoiceSendButton(messageBox) {
+        const controls = new Set();
+        document.querySelectorAll('button, [role="button"], gv-icon-button, .send-button').forEach(element => {
+            const control = element.matches('button, [role="button"], gv-icon-button')
+                ? element
+                : element.closest('button, [role="button"], gv-icon-button') ||
+                    (element.matches('.send-button') ? element : null);
+            if (control && !control.closest('#gv-copilot-container')) controls.add(control);
+        });
+
+        const sendControls = Array.from(controls).filter(control => {
+            if (control.getClientRects().length === 0) return false;
+            const labels = [
+                control.getAttribute('aria-label'),
+                control.getAttribute('title'),
+                control.getAttribute('mattooltip'),
+                control.getAttribute('data-tooltip'),
+                control.matches('.send-button') ? 'Send' : null,
+                control.innerText,
+                control.textContent
+            ];
+            control.querySelectorAll('mat-icon, [data-mat-icon-name], svg [aria-label], svg title').forEach(icon => {
+                labels.push(
+                    icon.getAttribute('aria-label'),
+                    icon.getAttribute('title'),
+                    icon.getAttribute('data-mat-icon-name'),
+                    icon.textContent
+                );
+            });
+            return labels.some(label => /^send(?:\s+(?:message|sms|text))?(?=$|\s|\()/i.test(String(label || '').trim()));
+        });
+
+        const distanceFromMessageBox = control => {
+            let distance = 0;
+            for (let ancestor = messageBox; ancestor; ancestor = ancestor.parentElement, distance++) {
+                if (ancestor === control || ancestor.contains(control)) return distance;
+            }
+            return Number.MAX_SAFE_INTEGER;
+        };
+        const isEnabled = control =>
+            !control.disabled &&
+            !control.hasAttribute('disabled') &&
+            control.getAttribute('aria-disabled') !== 'true';
+
+        return sendControls
+            .filter(isEnabled)
+            .sort((left, right) => distanceFromMessageBox(left) - distanceFromMessageBox(right))[0] || null;
+    }
+
+    async function waitForGoogleVoiceSendButton(messageBox, timeoutMs = 5000) {
+        const deadline = Date.now() + timeoutMs;
+        while (Date.now() < deadline) {
+            const button = getGoogleVoiceSendButton(messageBox);
+            if (button) return button;
+            await new Promise(resolve => setTimeout(resolve, 200));
+        }
+        return null;
     }
 
     function getActiveClientDetails() {
@@ -1740,10 +1799,8 @@ Suggest two of these confirmed openings politely, keep the reply to 1-2 friendly
                 if (!field.isConnected || normalizePhone(getActiveClientDetails().phone) !== normalizePhone(client.phone)) {
                     throw new Error('The active conversation changed before sending. The reply remains unsent.');
                 }
-                const sendButton = document.querySelector(
-                    'button[aria-label*="Send message" i], button[mattooltip*="Send" i], .send-button, gv-icon-button[aria-label*="Send" i]'
-                );
-                if (!sendButton || sendButton.disabled) {
+                const sendButton = await waitForGoogleVoiceSendButton(field);
+                if (!sendButton) {
                     status.textContent = 'Draft ready';
                     detail.textContent = 'Approved draft is in the message box. Send it manually; NIIS was not updated.';
                     return;
@@ -1927,11 +1984,8 @@ Suggest two of these confirmed openings politely, keep the reply to 1-2 friendly
                 setInputValue(field, testMessage);
                 if (field.value !== testMessage) throw new Error('Google Voice did not accept the test message.');
 
-                const control = document.querySelector(
-                    'button[aria-label*="Send message" i], button[mattooltip*="Send" i], .send-button, mat-icon[data-mat-icon-type="font"][aria-label*="send" i]'
-                );
-                const sendButton = control?.matches('button') ? control : control?.closest('button');
-                if (!sendButton || sendButton.disabled || sendButton.getClientRects().length === 0) {
+                const sendButton = await waitForGoogleVoiceSendButton(field);
+                if (!sendButton) {
                     throw new Error('Could not verify an enabled Google Voice Send button.');
                 }
 
@@ -2149,11 +2203,8 @@ Write only the SMS body that carries out the user's instruction. Use the convers
             setInputValue(field, message);
             if (field.value !== message) throw new Error('Google Voice did not accept the approved message.');
 
-            const sendControl = document.querySelector(
-                'button[aria-label*="Send message" i], button[mattooltip*="Send" i], .send-button, mat-icon[data-mat-icon-type="font"][aria-label*="send" i]'
-            );
-            const sendButton = sendControl?.matches('button') ? sendControl : sendControl?.closest('button');
-            if (!sendButton || sendButton.disabled || sendButton.getClientRects().length === 0) {
+            const sendButton = await waitForGoogleVoiceSendButton(field);
+            if (!sendButton) {
                 throw new Error('Could not verify an enabled Google Voice Send button.');
             }
 
@@ -2479,13 +2530,8 @@ Write only the SMS body that carries out the user's instruction. Use the convers
                         continue;
                     }
 
-                    const sendBtn = document.querySelector(
-                        'button[aria-label*="Send message" i], button[mattooltip*="Send" i], .send-button, mat-icon[data-mat-icon-type="font"][aria-label*="send" i]'
-                    );
-                    const sendButton = sendBtn?.matches('button')
-                        ? sendBtn
-                        : sendBtn?.closest('button');
-                    if (!sendButton || sendButton.disabled || sendButton.getClientRects().length === 0) {
+                    const sendButton = await waitForGoogleVoiceSendButton(messageBox);
+                    if (!sendButton) {
                         throw new Error('Could not verify an enabled Google Voice Send button; the item remains queued.');
                     }
 
