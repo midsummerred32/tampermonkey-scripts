@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         NIIS Automation (GV SMS + Slybroadcast Voicemails)
 // @namespace    http://tampermonkey.net/
-// @version      5.11
+// @version      5.12
 // @downloadURL  https://raw.githubusercontent.com/midsummerred32/tampermonkey-scripts/master/NIIS%20Automation%20(GV%20SMS%20+%20Slybroadcast%20Voicemails)-5.2.user.js
 // @updateURL    https://raw.githubusercontent.com/midsummerred32/tampermonkey-scripts/master/NIIS%20Automation%20(GV%20SMS%20+%20Slybroadcast%20Voicemails)-5.2.user.js
 // @description  Automates NIIS SMS queues and Slybroadcast voicemail lists, with AI-assisted Google Voice scheduling, iCal availability, Telegram approval, and NIIS logging.
@@ -858,7 +858,7 @@ Suggest two of these confirmed openings politely, keep the reply to 1-2 friendly
         const visible = element => element.getClientRects().length > 0;
         const getPhoneCandidates = element => {
             if (!element) return [];
-            const nodes = [element, ...element.querySelectorAll('*').filter(visible)];
+            const nodes = [element, ...Array.from(element.querySelectorAll('*')).filter(visible)];
             const values = nodes.flatMap(node => [
                 node.innerText,
                 node.textContent,
