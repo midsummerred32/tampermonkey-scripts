@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         NIIS Automation (GV SMS + Slybroadcast Voicemails)
 // @namespace    http://tampermonkey.net/
-// @version      5.13
+// @version      5.14
 // @downloadURL  https://raw.githubusercontent.com/midsummerred32/tampermonkey-scripts/master/NIIS%20Automation%20(GV%20SMS%20+%20Slybroadcast%20Voicemails)-5.2.user.js
 // @updateURL    https://raw.githubusercontent.com/midsummerred32/tampermonkey-scripts/master/NIIS%20Automation%20(GV%20SMS%20+%20Slybroadcast%20Voicemails)-5.2.user.js
 // @description  Automates NIIS SMS queues and Slybroadcast voicemail lists, with AI-assisted Google Voice scheduling, iCal availability, Telegram approval, and NIIS logging.
@@ -931,6 +931,13 @@ Suggest two of these confirmed openings politely, keep the reply to 1-2 friendly
         return String(phone || '').replace(/\D/g, '').slice(-10);
     }
 
+    function normalizeUSPhoneNumber(phone) {
+        const digits = String(phone || '').replace(/\D/g, '');
+        if (digits.length === 10) return digits;
+        if (digits.length === 11 && digits.startsWith('1')) return digits.slice(1);
+        return '';
+    }
+
     async function humanTypeIntoField(field, text) {
         field.focus();
         if (field instanceof HTMLTextAreaElement) {
@@ -1825,9 +1832,53 @@ Suggest two of these confirmed openings politely, keep the reply to 1-2 friendly
                 if (!AI_CONFIG.telegramToken || !AI_CONFIG.telegramChatId) {
                     throw new Error('Add your Telegram credentials using the NIIS Automation Settings button.');
                 }
-                if (!normalizePhone(client.phone)) {
-                    throw new Error('Could not identify the client phone number for Telegram approval.');
+                let targetPhone = normalizePhone(client.phone);
+                let phoneWasEnteredManually = false;
+                if (!targetPhone) {
+                    const enteredPhone = window.prompt(
+                        'Google Voice does not show this client’s phone number in the conversation header. ' +
+                        'Enter the client’s 10-digit phone number to include it in the Telegram approval.'
+                    );
+                    if (enteredPhone === null) return;
+                    targetPhone = normalizeUSPhoneNumber(enteredPhone);
+                    if (!targetPhone) {
+                        throw new Error('Enter a valid 10-digit US phone number (or 11 digits starting with 1).');
+                    }
+                    if (!window.confirm(
+                        `Use ${targetPhone} for the currently open Google Voice conversation? ` +
+                        'Verify the number carefully; it will be used as the SMS recipient.'
+                    )) return;
+                    phoneWasEnteredManually = true;
                 }
+                client.phone = targetPhone;
+
+                const conversationHeader = document.querySelector('gv-conversation-header') ||
+                    Array.from(document.querySelectorAll('header')).find(header => header.querySelector('h1, [role="heading"]'));
+                const initialConversation = {
+                    name: getActiveClientDetails().name,
+                    headerText: conversationHeader?.innerText?.replace(/\s+/g, ' ').trim() || '',
+                    messages: getActiveThreadMessages().slice(-10)
+                };
+                const isSameConversation = () => {
+                    if (!field.isConnected) return false;
+                    const current = getActiveClientDetails();
+                    const currentPhone = normalizePhone(current.phone);
+                    if (currentPhone) return currentPhone === targetPhone;
+
+                    const currentHeader = document.querySelector('gv-conversation-header') ||
+                        Array.from(document.querySelectorAll('header')).find(header => header.querySelector('h1, [role="heading"]'));
+                    const currentHeaderText = currentHeader?.innerText?.replace(/\s+/g, ' ').trim() || '';
+                    const currentMessages = getActiveThreadMessages().slice(-10);
+                    const headerMatches = !initialConversation.headerText ||
+                        currentHeaderText === initialConversation.headerText;
+                    const nameMatches = initialConversation.name === 'Unknown Client' ||
+                        current.name === initialConversation.name;
+                    const historyMatches = currentMessages.join('\n') === initialConversation.messages.join('\n');
+                    const hasConversationIdentity = initialConversation.headerText ||
+                        initialConversation.name !== 'Unknown Client' ||
+                        initialConversation.messages.length > 0;
+                    return Boolean(hasConversationIdentity && headerMatches && nameMatches && historyMatches);
+                };
 
                 const callbackId = `${Date.now().toString(36)}${Math.random().toString(36).slice(2, 6)}`;
                 status.textContent = 'Sending Telegram approval...';
@@ -1854,12 +1905,12 @@ Suggest two of these confirmed openings politely, keep the reply to 1-2 friendly
                 }
 
                 status.textContent = 'Approved; sending...';
-                if (!field.isConnected || normalizePhone(getActiveClientDetails().phone) !== normalizePhone(client.phone)) {
+                if (!isSameConversation()) {
                     throw new Error('The active conversation changed while awaiting approval. The approved reply was not sent.');
                 }
                 await humanTypeIntoField(field, reply);
                 await new Promise(resolve => setTimeout(resolve, 800));
-                if (!field.isConnected || normalizePhone(getActiveClientDetails().phone) !== normalizePhone(client.phone)) {
+                if (!isSameConversation()) {
                     throw new Error('The active conversation changed before sending. The reply remains unsent.');
                 }
                 const sendButton = await waitForGoogleVoiceSendButton(field);
@@ -1877,12 +1928,14 @@ Suggest two of these confirmed openings politely, keep the reply to 1-2 friendly
                     throw new Error('Send was clicked, but Google Voice did not confirm the message. Verify the conversation before retrying.');
                 }
                 broadcastAIAttemptToNIIS({
-                    phone: client.phone,
+                    phone: targetPhone,
                     clientName: client.name,
                     draftText: reply
                 });
                 status.textContent = 'Sent';
-                detail.textContent = 'SMS sent. Requested NIIS logging for the matching order.';
+                detail.textContent = phoneWasEnteredManually
+                    ? `SMS sent to ${targetPhone}. Requested NIIS logging for the matching order.`
+                    : 'SMS sent. Requested NIIS logging for the matching order.';
             } catch (error) {
                 console.error('[GV-AI] Telegram approval flow failed:', error);
                 status.textContent = 'Error';
