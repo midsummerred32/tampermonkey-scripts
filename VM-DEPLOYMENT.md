@@ -1,10 +1,11 @@
 # Run the Google Voice reply monitor on an Ubuntu VM
 
 This project is a Tampermonkey userscript, not a standalone service. It reads
-Google Voice conversations from the signed-in browser, asks Ollama to assess
-incoming messages and draft replies, and sends drafts to Telegram. A message is
-sent only after you press **Approve & Send** in Telegram. A Python replacement
-would still need a signed-in browser because Google Voice does not provide a
+Google Voice conversations from the signed-in browser, asks Ollama to draft a
+reply for each unread conversation whose latest message is incoming, and sends
+the draft to Telegram. Every draft requires your review: a message is sent only
+after you press **Approve & Send** in Telegram. A Python replacement would
+still need a signed-in browser because Google Voice does not provide a
 supported public SMS API for this workflow.
 
 The monitor scans for unread conversations about once per minute and inspects
@@ -31,9 +32,10 @@ is not a headless or boot-before-login service.
    and its disk.
 5. On Google Voice, enable **Telegram Reply Monitor** and confirm the button
    shows **ON**. This enabled state persists in the userscript profile and is
-   restored when Google Voice is opened again. New drafts are sent to the
-   configured Telegram chat; no message is sent if you reject or do not approve
-   it. Approval requests expire after five minutes.
+   restored when Google Voice is opened again. Each unread conversation with a
+   detected incoming latest message gets a Telegram draft, even if the AI might
+   otherwise consider a response unnecessary. No message is sent if you reject
+   or do not approve it. Approval requests expire after five minutes.
 
 ## Launch it when the desktop session starts
 
