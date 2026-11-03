@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         NIIS Automation (GV SMS + Slybroadcast Voicemails)
 // @namespace    http://tampermonkey.net/
-// @version      5.5
+// @version      5.6
 // @downloadURL  https://raw.githubusercontent.com/midsummerred32/tampermonkey-scripts/master/NIIS%20Automation%20(GV%20SMS%20+%20Slybroadcast%20Voicemails)-5.2.user.js
 // @updateURL    https://raw.githubusercontent.com/midsummerred32/tampermonkey-scripts/master/NIIS%20Automation%20(GV%20SMS%20+%20Slybroadcast%20Voicemails)-5.2.user.js
 // @description  Automates NIIS SMS queues and Slybroadcast voicemail lists, with AI-assisted Google Voice scheduling, iCal availability, Telegram approval, and NIIS logging.
@@ -711,63 +711,88 @@ Suggest two of these confirmed openings politely, keep the reply to 1-2 friendly
         } else if (visibleItems.length === 0) {
             listContainer.innerHTML = '<p style="text-align: center; color: #6c757d; font-size: 16px; padding: 20px;">No matching queue items.</p>';
         } else {
-            listContainer.innerHTML = visibleItems.map(({ item, index }) => `
-                <div style="border: 1px solid #e0e0e0; border-radius: 6px; padding: 12px 15px; margin-bottom: 12px; background: #fdfdfd; display: flex; flex-direction: column; gap: 8px;">
-                    <div style="display: flex; justify-content: space-between; align-items: center; border-bottom: 1px solid #eee; padding-bottom: 6px;">
-                        <span style="font-weight: bold; color: #1a73e8;">#${index + 1} | Order ID: ${item.orderId || 'N/A'}</span>
-                        <div>
-                            <button class="edit-queue-btn" data-index="${index}" style="padding: 4px 10px; background: #ffc107; color: #000; border: none; border-radius: 3px; cursor: pointer; font-size: 12px; font-weight: bold; margin-right: 5px;">Edit</button>
-                            <button class="delete-queue-btn" data-index="${index}" style="padding: 4px 10px; background: #dc3545; color: white; border: none; border-radius: 3px; cursor: pointer; font-size: 12px; font-weight: bold;">Delete</button>
-                        </div>
-                    </div>
-                    <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 10px; font-size: 13px;">
-                        <div><strong>📍 Address:</strong> <span id="add-text-${index}">${item.location || 'N/A'}</span></div>
-                        <div><strong>📞 Phone:</strong> <span id="phone-text-${index}">${item.phone || 'N/A'}</span></div>
-                    </div>
-                    <div style="font-size: 12px; background: #f1f3f4; padding: 8px; border-radius: 4px; white-space: pre-wrap; font-family: monospace; color: #333;" id="msg-text-${index}">${item.message}</div>
-                </div>
-            `).join('');
+            listContainer.replaceChildren();
 
-            document.querySelectorAll('.delete-queue-btn').forEach(btn => {
-                btn.onclick = (e) => {
-                    const idx = parseInt(e.target.getAttribute('data-index'));
-                    let currentQueue = GM_getValue('gv_sms_queue', []);
+            for (const { item, index } of visibleItems) {
+                const card = document.createElement('div');
+                card.style.cssText = 'border:1px solid #e0e0e0;border-radius:6px;padding:12px 15px;margin-bottom:12px;background:#fdfdfd;display:flex;flex-direction:column;gap:8px;';
+
+                const heading = document.createElement('div');
+                heading.style.cssText = 'display:flex;justify-content:space-between;align-items:center;border-bottom:1px solid #eee;padding-bottom:6px;';
+                const orderLabel = document.createElement('span');
+                orderLabel.style.cssText = 'font-weight:bold;color:#1a73e8;';
+                orderLabel.textContent = `#${index + 1} | Order ID: ${item.orderId || 'N/A'}`;
+
+                const actions = document.createElement('div');
+                const editButton = document.createElement('button');
+                editButton.type = 'button';
+                editButton.textContent = 'Edit';
+                editButton.dataset.index = String(index);
+                editButton.className = 'edit-queue-btn';
+                editButton.style.cssText = 'padding:4px 10px;background:#ffc107;color:#000;border:0;border-radius:3px;cursor:pointer;font-size:12px;font-weight:bold;margin-right:5px;';
+                const deleteButton = document.createElement('button');
+                deleteButton.type = 'button';
+                deleteButton.textContent = 'Delete';
+                deleteButton.dataset.index = String(index);
+                deleteButton.className = 'delete-queue-btn';
+                deleteButton.style.cssText = 'padding:4px 10px;background:#dc3545;color:#fff;border:0;border-radius:3px;cursor:pointer;font-size:12px;font-weight:bold;';
+                actions.append(editButton, deleteButton);
+                heading.append(orderLabel, actions);
+
+                const details = document.createElement('div');
+                details.style.cssText = 'display:grid;grid-template-columns:1fr 1fr;gap:10px;font-size:13px;';
+                const address = document.createElement('div');
+                const addressLabel = document.createElement('strong');
+                addressLabel.textContent = '📍 Address: ';
+                const addressText = document.createElement('span');
+                addressText.textContent = item.location || 'N/A';
+                address.append(addressLabel, addressText);
+                const phone = document.createElement('div');
+                const phoneLabel = document.createElement('strong');
+                phoneLabel.textContent = '📞 Phone: ';
+                const phoneText = document.createElement('span');
+                phoneText.textContent = item.phone || 'N/A';
+                phone.append(phoneLabel, phoneText);
+                details.append(address, phone);
+
+                const message = document.createElement('div');
+                message.style.cssText = 'font-size:12px;background:#f1f3f4;padding:8px;border-radius:4px;white-space:pre-wrap;font-family:monospace;color:#333;';
+                message.textContent = item.message || '';
+                card.append(heading, details, message);
+                listContainer.appendChild(card);
+            }
+
+            listContainer.querySelectorAll('.delete-queue-btn').forEach(button => {
+                button.addEventListener('click', () => {
+                    const idx = Number(button.dataset.index);
+                    const currentQueue = GM_getValue('gv_sms_queue', []);
+                    if (!Number.isInteger(idx) || idx < 0 || idx >= currentQueue.length) return;
                     currentQueue.splice(idx, 1);
                     GM_setValue('gv_sms_queue', currentQueue);
                     renderQueueModal();
-                };
+                });
             });
 
-            document.querySelectorAll('.edit-queue-btn').forEach(btn => {
-                btn.onclick = (e) => {
-                    const idx = parseInt(e.target.getAttribute('data-index'));
-                    let currentQueue = GM_getValue('gv_sms_queue', []);
+            listContainer.querySelectorAll('.edit-queue-btn').forEach(button => {
+                button.addEventListener('click', () => {
+                    const idx = Number(button.dataset.index);
+                    const currentQueue = GM_getValue('gv_sms_queue', []);
+                    if (!Number.isInteger(idx) || idx < 0 || idx >= currentQueue.length) return;
                     const item = currentQueue[idx];
 
-                    const newPhone = prompt("Edit Phone Number:", item.phone);
+                    const newPhone = prompt('Edit Phone Number:', item.phone);
                     if (newPhone === null) return;
-                    currentQueue[idx].phone = newPhone.trim();
-                    GM_setValue('gv_sms_queue', currentQueue);
+                    const newAddress = prompt('Edit Property Address:', item.location);
+                    if (newAddress === null) return;
+                    const newMessage = prompt('Edit Message Text:', item.message);
+                    if (newMessage === null) return;
 
-                    const newAddress = prompt("Edit Property Address:", item.location);
-                    if (newAddress === null) {
-                        renderQueueModal();
-                        return;
-                    }
-                    currentQueue[idx].location = newAddress.trim();
-                    GM_setValue('gv_sms_queue', currentQueue);
-
-                    const newMessage = prompt("Edit Message Text:", item.message);
-                    if (newMessage === null) {
-                        renderQueueModal();
-                        return;
-                    }
-
-                    currentQueue[idx].message = newMessage.trim();
-
+                    item.phone = newPhone.trim();
+                    item.location = newAddress.trim();
+                    item.message = newMessage.trim();
                     GM_setValue('gv_sms_queue', currentQueue);
                     renderQueueModal();
-                };
+                });
             });
         }
 
@@ -1481,6 +1506,10 @@ Suggest two of these confirmed openings politely, keep the reply to 1-2 friendly
 
         clearBtn.addEventListener('click', () => {
             if (confirm('Are you sure you want to clear the entire text queue?')) {
+                if (isRunning) {
+                    alert('Stop auto-sending before clearing the queue.');
+                    return;
+                }
                 GM_setValue('gv_sms_queue', []);
                 alert('Queue cleared!');
             }
@@ -1502,8 +1531,11 @@ Suggest two of these confirmed openings politely, keep the reply to 1-2 friendly
             }
 
             isRunning = true;
+            manageBtn.disabled = true;
+            clearBtn.disabled = true;
             btn.style.background = '#ffc107';
             btn.style.color = '#000';
+            let failureMessage = '';
 
             while (queue.length > 0 && isRunning) {
                 skipRequested = false;
@@ -1511,13 +1543,24 @@ Suggest two of these confirmed openings politely, keep the reply to 1-2 friendly
                 btn.textContent = `Stop (${queue.length} left) - Sending to ${currentItem.phone}...`;
 
                 try {
-                    const sendMsgBtn = document.querySelector('.threads-button[aria-label="Send new message"]')
-                                    || document.querySelector('.threads-button');
-
-                    if (sendMsgBtn) {
-                        sendMsgBtn.click();
-                        await sleep(1500);
+                    if (!isRunning || skipRequested) {
+                        if (skipRequested) {
+                            queue.shift();
+                            GM_setValue('gv_sms_queue', queue);
+                            continue;
+                        }
+                        break;
                     }
+
+                    const targetPhone = normalizePhone(currentItem.phone);
+                    if (targetPhone.length !== 10 || !String(currentItem.message || '').trim()) {
+                        throw new Error(`Order ${currentItem.orderId} has an invalid phone number or empty message.`);
+                    }
+
+                    const sendMsgBtn = document.querySelector('.threads-button[aria-label="Send new message"]');
+                    if (!sendMsgBtn) throw new Error('Could not find Google Voice’s New message button.');
+                    sendMsgBtn.click();
+                    await sleep(1500);
 
                     if (!isRunning || skipRequested) {
                         if (skipRequested) {
@@ -1528,23 +1571,39 @@ Suggest two of these confirmed openings politely, keep the reply to 1-2 friendly
                         break;
                     }
 
-                    const recipientInput = document.querySelector('input[placeholder*="Type a name or phone number"]')
-                                        || document.querySelector('input[aria-label*="Type a name or phone number"]')
-                                        || document.querySelectorAll('input[type="text"]:not(.gb_He)')[0];
+                    const recipientInput = document.querySelector(
+                        'input[placeholder*="Type a name or phone number" i], input[aria-label*="Type a name or phone number" i]'
+                    );
+                    if (!recipientInput) throw new Error('Could not find the Google Voice recipient field; the item remains queued.');
 
-                    if (recipientInput) {
-                        setInputValue(recipientInput, currentItem.phone);
-                        await sleep(1000);
+                    setInputValue(recipientInput, currentItem.phone);
+                    await sleep(1000);
+                    recipientInput.dispatchEvent(new KeyboardEvent('keydown', {
+                        key: 'Enter',
+                        keyCode: 13,
+                        code: 'Enter',
+                        bubbles: true
+                    }));
+                    await sleep(1000);
 
-                        recipientInput.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', keyCode: 13, code: 'Enter', bubbles: true }));
-                        await sleep(1000);
-
-                        const dropdownOption = document.querySelector('mat-option, [role="option"], .send-to-button, .contact-label-item');
-                        if (dropdownOption) {
-                            dropdownOption.click();
-                            await sleep(1200);
-                        }
+                    const recipientOptions = Array.from(document.querySelectorAll('mat-option, [role="option"], .send-to-button, .contact-label-item'))
+                        .filter(option => option.getClientRects().length > 0 && !option.hasAttribute('aria-disabled'));
+                    const matchingPhoneOptions = recipientOptions.filter(option =>
+                        normalizePhone(option.innerText || option.textContent || '').endsWith(targetPhone)
+                    );
+                    const singleOptionPhone = recipientOptions.length === 1
+                        ? normalizePhone(recipientOptions[0].innerText || recipientOptions[0].textContent || '')
+                        : '';
+                    const dropdownOption = matchingPhoneOptions.length === 1
+                        ? matchingPhoneOptions[0]
+                        : matchingPhoneOptions.length === 0 && recipientOptions.length === 1 && singleOptionPhone.length < 10
+                            ? recipientOptions[0]
+                            : null;
+                    if (!dropdownOption) {
+                        throw new Error('Google Voice recipient suggestion does not match the queued phone number; the item remains queued.');
                     }
+                    dropdownOption.click();
+                    await sleep(1200);
 
                     if (!isRunning || skipRequested) {
                         if (skipRequested) {
@@ -1555,45 +1614,65 @@ Suggest two of these confirmed openings politely, keep the reply to 1-2 friendly
                         break;
                     }
 
-                    const messageBox = document.querySelector('textarea[aria-label*="Type a message"]')
-                                    || document.querySelector('textarea#user-input')
-                                    || document.querySelector('textarea');
-
-                    if (messageBox) {
-                        setInputValue(messageBox, currentItem.message);
-                        await sleep(1200);
-
-                        if (skipRequested) {
-                            queue.shift();
-                            GM_setValue('gv_sms_queue', queue);
-                            continue;
-                        }
-
-                        const sendBtn = document.querySelector('button[aria-label*="Send message"]')
-                                     || document.querySelector('button[mattooltip*="Send"]')
-                                     || document.querySelector('.send-button')
-                                     || document.querySelector('mat-icon[data-mat-icon-type="font"][aria-label*="send"]')?.closest('button');
-
-                        let sentSuccessfully = false;
-                        if (sendBtn && !sendBtn.disabled) {
-                            sendBtn.click();
-                            sentSuccessfully = true;
-                        } else {
-                            messageBox.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', keyCode: 13, code: 'Enter', bubbles: true }));
-                            sentSuccessfully = true;
-                        }
-
-                        if (sentSuccessfully) {
-                            console.log(`✅ Successfully sent SMS to ${currentItem.phone}. Logging to NIIS now...`);
-                            await logToNIIS(currentItem.orderId, currentItem.clientId, 'Left message.');
-                        }
+                    const messageBox = document.querySelector(
+                        'textarea[aria-label*="Type a message" i], textarea[placeholder*="Type a message" i], textarea#user-input'
+                    );
+                    if (!messageBox || messageBox.disabled || messageBox.getClientRects().length === 0) {
+                        throw new Error('Could not find an active message box; the item remains queued.');
                     }
 
+                    setInputValue(messageBox, currentItem.message);
+                    if (messageBox.value !== currentItem.message) {
+                        throw new Error('Google Voice did not accept the message text; the item remains queued.');
+                    }
+                    await sleep(500);
+
+                    if (skipRequested) {
+                        queue.shift();
+                        GM_setValue('gv_sms_queue', queue);
+                        continue;
+                    }
+
+                    const sendBtn = document.querySelector(
+                        'button[aria-label*="Send message" i], button[mattooltip*="Send" i], .send-button, mat-icon[data-mat-icon-type="font"][aria-label*="send" i]'
+                    );
+                    const sendButton = sendBtn?.matches('button')
+                        ? sendBtn
+                        : sendBtn?.closest('button');
+                    if (!sendButton || sendButton.disabled || sendButton.getClientRects().length === 0) {
+                        throw new Error('Could not verify an enabled Google Voice Send button; the item remains queued.');
+                    }
+
+                    const normalizeMessage = message => message.replace(/\s+/g, ' ').trim().toLowerCase();
+                    const expectedMessage = normalizeMessage(currentItem.message);
+                    const priorMatchingMessages = getActiveThreadMessages().filter(message =>
+                        normalizeMessage(message).includes(expectedMessage)
+                    ).length;
+                    sendButton.click();
+                    let messageAppeared = false;
+                    for (let attempt = 0; attempt < 20; attempt++) {
+                        await sleep(500);
+                        const matchingMessages = getActiveThreadMessages().filter(message =>
+                            normalizeMessage(message).includes(expectedMessage)
+                        );
+                        messageAppeared = matchingMessages.length > priorMatchingMessages;
+                        if (messageAppeared) break;
+                    }
+                    if (!messageAppeared) {
+                        throw new Error('Send was clicked, but the message was not confirmed in the conversation. Verify before retrying; the item remains queued.');
+                    }
+
+                    console.log(`✅ Confirmed SMS to ${currentItem.phone}. Logging to NIIS now...`);
+                    const logged = await logToNIIS(currentItem.orderId, currentItem.clientId, 'Left message.');
+                    if (!logged) {
+                        console.error(`[NIIS] SMS was sent to ${currentItem.phone}, but logging failed for order ${currentItem.orderId}.`);
+                    }
                     queue.shift();
                     GM_setValue('gv_sms_queue', queue);
 
                 } catch (err) {
                     console.error(`❌ Error processing ${currentItem.phone}:`, err);
+                    failureMessage = err.message;
                     break;
                 }
 
@@ -1611,9 +1690,16 @@ Suggest two of these confirmed openings politely, keep the reply to 1-2 friendly
             }
 
             isRunning = false;
-            btn.textContent = queue.length === 0 ? 'Queue Finished!' : 'Resume Auto-Sending';
+            manageBtn.disabled = false;
+            clearBtn.disabled = false;
+            btn.textContent = failureMessage
+                ? `Paused: ${failureMessage}`
+                : queue.length === 0 ? 'Queue Finished!' : 'Resume Auto-Sending';
             btn.style.background = '#1a73e8';
             btn.style.color = '#fff';
+            if (failureMessage) {
+                alert(`${failureMessage}\n\nThe current item remains in the queue. If Send was already clicked, verify the conversation before retrying.`);
+            }
         });
     }
 
