@@ -1,23 +1,73 @@
 // ==UserScript==
 // @name         NIIS Automation (GV SMS + Slybroadcast Voicemails)
 // @namespace    http://tampermonkey.net/
-// @version      5.3
+// @version      5.4
 // @downloadURL  https://raw.githubusercontent.com/midsummerred32/tampermonkey-scripts/master/NIIS%20Automation%20(GV%20SMS%20+%20Slybroadcast%20Voicemails)-5.2.user.js
 // @updateURL    https://raw.githubusercontent.com/midsummerred32/tampermonkey-scripts/master/NIIS%20Automation%20(GV%20SMS%20+%20Slybroadcast%20Voicemails)-5.2.user.js
-// @description  Parses NIIS orders, generates line-separated Slybroadcast phone lists to clipboard, sends GV messages, and logs activity back to NIIS.
+// @description  Automates NIIS SMS queues and Slybroadcast voicemail lists, with AI-assisted Google Voice scheduling, iCal availability, Telegram approval, and NIIS logging.
 // @match        https://nationalis.com/ssecure/browser/inspector.cfm*
 // @match        https://nationalis.com/ssecure/index.cfm*
 // @match        https://voice.google.com/*
 // @connect      nationalis.com
+// @connect      localhost
+// @connect      127.0.0.1
+// @connect      calendar.google.com
+// @connect      api.telegram.org
 // @grant        GM_setValue
 // @grant        GM_getValue
 // @grant        GM_xmlhttpRequest
+// @grant        GM_registerMenuCommand
+// @grant        GM_addValueChangeListener
 // ==/UserScript==
 
 (function() {
     'use strict';
 
     const currentUrl = window.location.href;
+
+    const AI_CONFIG = {
+        ollamaUrl: GM_getValue('ollamaUrl', 'http://localhost:11434/api/generate'),
+        ollamaModel: GM_getValue('ollamaModel', 'llama3.2:latest'),
+        icalUrl: GM_getValue('icalUrl', ''),
+        telegramToken: GM_getValue('telegramToken', ''),
+        telegramChatId: GM_getValue('telegramChatId', ''),
+        inspectionDurationHours: 3
+    };
+
+    GM_registerMenuCommand('Configure Google Calendar iCal URL', () => {
+        const value = prompt('Paste your Google Calendar Secret iCal Address:', AI_CONFIG.icalUrl);
+        if (value !== null) {
+            AI_CONFIG.icalUrl = value.trim();
+            GM_setValue('icalUrl', AI_CONFIG.icalUrl);
+            alert('Calendar URL saved.');
+        }
+    });
+
+    GM_registerMenuCommand('Configure Telegram Credentials', () => {
+        const token = prompt('Enter Telegram Bot Token:', AI_CONFIG.telegramToken);
+        if (token === null) return;
+        const chatId = prompt('Enter your Telegram Chat ID:', AI_CONFIG.telegramChatId);
+        if (chatId === null) return;
+
+        AI_CONFIG.telegramToken = token.trim();
+        AI_CONFIG.telegramChatId = chatId.trim();
+        GM_setValue('telegramToken', AI_CONFIG.telegramToken);
+        GM_setValue('telegramChatId', AI_CONFIG.telegramChatId);
+        alert('Telegram credentials saved.');
+    });
+
+    GM_registerMenuCommand('Configure Ollama Settings', () => {
+        const url = prompt('Enter Ollama Endpoint:', AI_CONFIG.ollamaUrl);
+        if (url === null) return;
+        const model = prompt('Enter Ollama Model Name:', AI_CONFIG.ollamaModel);
+        if (model === null) return;
+
+        AI_CONFIG.ollamaUrl = url.trim();
+        AI_CONFIG.ollamaModel = model.trim();
+        GM_setValue('ollamaUrl', AI_CONFIG.ollamaUrl);
+        GM_setValue('ollamaModel', AI_CONFIG.ollamaModel);
+        alert('Ollama settings saved.');
+    });
 
     function getTodayKey() {
         const d = new Date();
@@ -168,6 +218,383 @@
         if (!sentTodayTracker[todayKey]) sentTodayTracker[todayKey] = [];
         if (!sentTodayTracker[todayKey].includes(orderId)) sentTodayTracker[todayKey].push(orderId);
         GM_setValue('gv_sent_today', sentTodayTracker);
+    }
+
+    function parseICalDate(dateStr) {
+        const clean = dateStr?.trim();
+        if (!clean) return null;
+
+        if (/^\d{8}$/.test(clean)) {
+            return new Date(
+                Number(clean.slice(0, 4)),
+                Number(clean.slice(4, 6)) - 1,
+                Number(clean.slice(6, 8))
+            );
+        }
+
+        const match = clean.match(/^(\d{4})(\d{2})(\d{2})T(\d{2})(\d{2})(\d{2})(Z)?$/);
+        if (match) {
+            const [, year, month, day, hour, minute, second, isUtc] = match;
+            const parts = [+year, +month - 1, +day, +hour, +minute, +second];
+            return isUtc
+                ? new Date(Date.UTC(...parts))
+                : new Date(...parts);
+        }
+
+        const parsed = new Date(clean);
+        return Number.isNaN(parsed.getTime()) ? null : parsed;
+    }
+
+    function fetchBusyEvents() {
+        return new Promise((resolve, reject) => {
+            if (!AI_CONFIG.icalUrl) {
+                reject(new Error('Configure your Google Calendar iCal URL from the Tampermonkey menu first.'));
+                return;
+            }
+
+            GM_xmlhttpRequest({
+                method: 'GET',
+                url: AI_CONFIG.icalUrl,
+                headers: { 'Cache-Control': 'no-cache' },
+                timeout: 15000,
+                onload: (response) => {
+                    if (response.status < 200 || response.status >= 300) {
+                        reject(new Error(`Failed to load calendar: HTTP ${response.status}`));
+                        return;
+                    }
+
+                    const eventMatches = [...response.responseText.matchAll(/BEGIN:VEVENT([\s\S]*?)END:VEVENT/g)];
+                    const busyRanges = [];
+                    for (const match of eventMatches) {
+                        const startMatch = match[1].match(/DTSTART(?:;[^:]+)?:([^\r\n]+)/);
+                        const endMatch = match[1].match(/DTEND(?:;[^:]+)?:([^\r\n]+)/);
+                        const start = startMatch && parseICalDate(startMatch[1]);
+                        const end = endMatch
+                            ? parseICalDate(endMatch[1])
+                            : start && new Date(start.getTime() + 3600000);
+                        if (start && end && end > start) busyRanges.push({ start, end });
+                    }
+                    resolve(busyRanges);
+                },
+                ontimeout: () => reject(new Error('Timed out loading the Google Calendar iCal feed.')),
+                onerror: (error) => reject(new Error(`Failed to load calendar: ${error?.error || 'network error'}`))
+            });
+        });
+    }
+
+    async function getAvailableInspectionSlots() {
+        const busyRanges = await fetchBusyEvents();
+        const slots = [];
+        const checkDate = new Date();
+        checkDate.setDate(checkDate.getDate() + 1);
+
+        for (let daysAhead = 0; daysAhead < 60 && slots.length < 3; daysAhead++) {
+            if (checkDate.getDay() !== 0 && checkDate.getDay() !== 6) {
+                for (const hour of [9, 13]) {
+                    const minute = hour === 13 ? 30 : 0;
+                    const start = new Date(
+                        checkDate.getFullYear(),
+                        checkDate.getMonth(),
+                        checkDate.getDate(),
+                        hour,
+                        minute
+                    );
+                    const end = new Date(start.getTime() + AI_CONFIG.inspectionDurationHours * 3600000);
+                    if (!busyRanges.some(event => start < event.end && end > event.start)) {
+                        const dayLabel = checkDate.toLocaleDateString('en-US', {
+                            weekday: 'long',
+                            month: 'short',
+                            day: 'numeric'
+                        });
+                        const timeLabel = hour === 9 ? '9:00 AM' : '1:30 PM';
+                        slots.push(`${dayLabel} at ${timeLabel}`);
+                        if (slots.length === 3) break;
+                    }
+                }
+            }
+            checkDate.setDate(checkDate.getDate() + 1);
+        }
+
+        if (slots.length === 0) {
+            throw new Error('No available inspection slots were found in the next 60 days.');
+        }
+        return slots.join(', or ');
+    }
+
+    function generateAIReply(clientMessage, slots) {
+        const prompt = `You are a professional home inspection scheduling assistant.
+A client sent this message: "${clientMessage}".
+Our current confirmed inspection openings are: ${slots}.
+
+Suggest two of these confirmed openings politely, keep the reply to 1-2 friendly concise SMS sentences, and ask whether either time works or they need another window. Output only the message text.`;
+
+        return new Promise((resolve, reject) => {
+            GM_xmlhttpRequest({
+                method: 'POST',
+                url: AI_CONFIG.ollamaUrl,
+                headers: { 'Content-Type': 'application/json' },
+                data: JSON.stringify({
+                    model: AI_CONFIG.ollamaModel,
+                    prompt,
+                    stream: false
+                }),
+                timeout: 120000,
+                onload: (response) => {
+                    if (response.status < 200 || response.status >= 300) {
+                        reject(new Error(`Ollama request failed: HTTP ${response.status}`));
+                        return;
+                    }
+                    try {
+                        const result = JSON.parse(response.responseText);
+                        if (typeof result.response !== 'string' || !result.response.trim()) {
+                            throw new Error('Ollama returned an empty reply.');
+                        }
+                        resolve(result.response.trim());
+                    } catch (error) {
+                        reject(new Error(`Invalid Ollama response: ${error.message}`));
+                    }
+                },
+                ontimeout: () => reject(new Error('Ollama request timed out.')),
+                onerror: () => reject(new Error('Could not connect to Ollama. Check that it is running and accessible.'))
+            });
+        });
+    }
+
+    function sendTelegramApprovalRequest(client, clientText, draft, callbackId) {
+        if (!AI_CONFIG.telegramToken || !AI_CONFIG.telegramChatId) {
+            return Promise.reject(new Error('Configure the Telegram bot token and chat ID from the Tampermonkey menu first.'));
+        }
+
+        return new Promise((resolve, reject) => {
+            GM_xmlhttpRequest({
+                method: 'POST',
+                url: `https://api.telegram.org/bot${AI_CONFIG.telegramToken}/sendMessage`,
+                headers: { 'Content-Type': 'application/json' },
+                data: JSON.stringify({
+                    chat_id: AI_CONFIG.telegramChatId,
+                    text: `New inspection inquiry\nClient: ${client.name} (${client.phone})\nMessage: ${clientText}\n\nAI draft:\n${draft}`,
+                    reply_markup: {
+                        inline_keyboard: [[
+                            { text: 'Approve & Send SMS', callback_data: `send_${callbackId}` },
+                            { text: 'Reject Draft', callback_data: `reject_${callbackId}` }
+                        ]]
+                    }
+                }),
+                onload: (response) => {
+                    try {
+                        const result = JSON.parse(response.responseText);
+                        if (response.status >= 200 && response.status < 300 && result.ok) {
+                            resolve(result.result);
+                        } else {
+                            reject(new Error(result.description || `Telegram request failed: HTTP ${response.status}`));
+                        }
+                    } catch (error) {
+                        reject(new Error(`Invalid Telegram response: ${error.message}`));
+                    }
+                },
+                onerror: () => reject(new Error('Could not connect to Telegram.'))
+            });
+        });
+    }
+
+    function acknowledgeTelegramCallback(queryId, text) {
+        GM_xmlhttpRequest({
+            method: 'POST',
+            url: `https://api.telegram.org/bot${AI_CONFIG.telegramToken}/answerCallbackQuery`,
+            headers: { 'Content-Type': 'application/json' },
+            data: JSON.stringify({ callback_query_id: queryId, text })
+        });
+    }
+
+    function pollTelegramDecision(callbackId, timeoutMs = 300000) {
+        return new Promise((resolve, reject) => {
+            const startTime = Date.now();
+            let lastUpdateId = 0;
+
+            const check = () => {
+                if (Date.now() - startTime >= timeoutMs) {
+                    resolve('timeout');
+                    return;
+                }
+
+                GM_xmlhttpRequest({
+                    method: 'GET',
+                    url: `https://api.telegram.org/bot${AI_CONFIG.telegramToken}/getUpdates?offset=${lastUpdateId}&timeout=5`,
+                    onload: (response) => {
+                        try {
+                            const result = JSON.parse(response.responseText);
+                            if (!result.ok) throw new Error(result.description || 'Telegram polling failed.');
+                            for (const update of result.result || []) {
+                                lastUpdateId = update.update_id + 1;
+                                const callback = update.callback_query;
+                                if (!callback?.data) continue;
+                                if (callback.data === `send_${callbackId}`) {
+                                    acknowledgeTelegramCallback(callback.id, 'Approved. Sending SMS.');
+                                    resolve('approved');
+                                    return;
+                                }
+                                if (callback.data === `reject_${callbackId}`) {
+                                    acknowledgeTelegramCallback(callback.id, 'Draft rejected.');
+                                    resolve('rejected');
+                                    return;
+                                }
+                            }
+                            setTimeout(check, 2500);
+                        } catch (error) {
+                            reject(new Error(`Telegram polling failed: ${error.message}`));
+                        }
+                    },
+                    onerror: () => reject(new Error('Could not poll Telegram for an approval decision.'))
+                });
+            };
+            check();
+        });
+    }
+
+    function getMessageInputField() {
+        const selectors = [
+            'textarea[aria-label*="message" i]',
+            'textarea[placeholder*="message" i]',
+            '[contenteditable="true"][aria-label*="message" i]',
+            '[contenteditable="true"][data-placeholder*="message" i]',
+            '[role="textbox"][aria-label*="message" i]',
+            '[role="textbox"][data-placeholder*="message" i]',
+            'textarea',
+            '[contenteditable="true"]',
+            '[role="textbox"]'
+        ];
+
+        for (const selector of selectors) {
+            const field = Array.from(document.querySelectorAll(selector)).find((candidate) => {
+                if (candidate.closest('#gv-copilot-container')) return false;
+                if (candidate.disabled || candidate.readOnly || candidate.getAttribute('aria-hidden') === 'true') return false;
+                const description = [
+                    candidate.getAttribute('aria-label'),
+                    candidate.getAttribute('placeholder'),
+                    candidate.getAttribute('data-placeholder')
+                ].filter(Boolean).join(' ');
+                return !/search|filter/i.test(description) && candidate.getClientRects().length > 0;
+            });
+            if (field) return field;
+        }
+        return null;
+    }
+
+    function getActiveThreadMessages() {
+        return Array.from(document.querySelectorAll('gv-text-message-item, div[gv-test-id="item-view"]'))
+            .map(message => message.innerText.trim())
+            .filter(Boolean);
+    }
+
+    function getActiveClientDetails() {
+        const header = document.querySelector('header, gv-conversation-header');
+        const headerText = header?.innerText || '';
+        const phoneMatch = headerText.match(/\+?1?\s*\(?\d{3}\)?[-.\s]?\d{3}[-.\s]?\d{4}/);
+        return {
+            name: header?.querySelector('h1')?.innerText.trim() || 'Unknown Client',
+            phone: phoneMatch ? phoneMatch[0].trim() : 'Unknown Phone'
+        };
+    }
+
+    function normalizePhone(phone) {
+        return String(phone || '').replace(/\D/g, '').slice(-10);
+    }
+
+    async function humanTypeIntoField(field, text) {
+        field.focus();
+        if (field instanceof HTMLTextAreaElement) {
+            field.value = '';
+            field.dispatchEvent(new Event('input', { bubbles: true }));
+        }
+
+        for (const character of text) {
+            if (field instanceof HTMLTextAreaElement) {
+                field.value += character;
+                field.dispatchEvent(new Event('input', { bubbles: true }));
+            } else {
+                document.execCommand('insertText', false, character);
+            }
+            const delay = Math.floor(Math.random() * 81) + 40 + (/[.,!?]/.test(character) ? 200 : character === ' ' ? 60 : 0);
+            await new Promise(resolve => setTimeout(resolve, delay));
+        }
+        field.dispatchEvent(new Event('change', { bubbles: true }));
+    }
+
+    function broadcastAIAttemptToNIIS(payload) {
+        GM_setValue('latest_national_sync_event', {
+            id: `${Date.now()}_${Math.random().toString(36).slice(2, 7)}`,
+            timestamp: new Date().toISOString(),
+            action: 'SMS_SENT',
+            ...payload
+        });
+    }
+
+    async function logAIAttemptToNIIS(event) {
+        const phoneDigits = String(event.phone || '').replace(/\D/g, '').slice(-10);
+        if (phoneDigits.length !== 10) {
+            console.error('[NIIS] Cannot sync AI SMS: client phone number is missing or invalid.');
+            return;
+        }
+        const containsPhone = (text) => {
+            const phoneMatches = String(text).match(/(?:\+?1[\s().-]*)?\d{3}[\s().-]*\d{3}[\s.-]*\d{4}/g) || [];
+            return phoneMatches.some(phone => phone.replace(/\D/g, '').slice(-10) === phoneDigits);
+        };
+
+        const rows = new Map();
+        document.querySelectorAll('div.hoverRow[data-ordid], tr[data-ordid]').forEach((row) => {
+            const orderId = row.getAttribute('data-ordid');
+            if (orderId && !rows.has(orderId)) {
+                rows.set(orderId, {
+                    row,
+                    clientId: row.getAttribute('data-clid')
+                });
+            }
+        });
+
+        const matches = [];
+        for (const [orderId, item] of rows) {
+            let foundPhone = containsPhone(item.row.innerText || item.row.textContent || '');
+
+            if (!foundPhone) {
+                try {
+                    const response = await fetch(
+                        `/ssecure/recordlog/form.cfm?id=${encodeURIComponent(orderId)}&appt=`,
+                        { credentials: 'same-origin' }
+                    );
+                    if (!response.ok) throw new Error(`HTTP ${response.status}`);
+                    const html = await response.text();
+                    const phoneMatch = html.match(/(?:Mobile )?Phone:<\/td>\s*<td[^>]*>([\s\S]*?)<\/td>/i);
+                    foundPhone = phoneMatch && containsPhone(phoneMatch[1].replace(/<[^>]+>/g, ' '));
+                } catch (error) {
+                    console.error(`[NIIS] Could not verify order ${orderId} for AI SMS sync:`, error);
+                    continue;
+                }
+            }
+
+            if (foundPhone) matches.push({ orderId, clientId: item.clientId });
+        }
+
+        if (matches.length !== 1) {
+            console.error(`[NIIS] AI SMS sync needs exactly one matching order for ${phoneDigits}; found ${matches.length}. No order was changed.`);
+            return;
+        }
+
+        const note = `AI SMS sent: ${String(event.draftText || '').slice(0, 120)}`;
+        if (!await logToNIIS(matches[0].orderId, matches[0].clientId, note)) {
+            console.error(`[NIIS] Failed to save AI SMS activity for order ${matches[0].orderId}.`);
+        }
+    }
+
+    if (currentUrl.includes('nationalis.com')) {
+        GM_addValueChangeListener('latest_national_sync_event', (_name, _oldValue, newValue) => {
+            if (newValue?.action !== 'SMS_SENT' || !newValue.id) return;
+            GM_setValue('latest_national_sync_claim', newValue.id);
+            setTimeout(() => {
+                if (GM_getValue('latest_national_sync_claim') === newValue.id) {
+                    logAIAttemptToNIIS(newValue);
+                }
+            }, 1000);
+        });
     }
 
     // =========================================================================
@@ -654,6 +1081,156 @@
         });
     }
 
+    function injectAICopilotWidget() {
+        if (document.getElementById('gv-copilot-container')) return;
+
+        const widget = document.createElement('section');
+        widget.id = 'gv-copilot-container';
+        widget.style.cssText = `
+            position: fixed; right: 24px; bottom: 92px; z-index: 10000;
+            width: 330px; box-sizing: border-box; padding: 14px 16px;
+            color: #202124; background: #fff; border: 1px solid #dadce0;
+            border-radius: 12px; box-shadow: 0 4px 16px rgba(60,64,67,.2);
+            font: 13px Roboto, Arial, sans-serif;
+        `;
+        widget.innerHTML = `
+            <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px">
+                <strong style="color:#1a73e8">AI Scheduling Copilot</strong>
+                <span id="gv-copilot-status" style="font-size:11px;color:#5f6368">Ready</span>
+            </div>
+            <p id="gv-copilot-detail" style="margin:0 0 10px;line-height:1.4;color:#3c4043">
+                Draft a reply using calendar availability, or request Telegram approval.
+            </p>
+            <div style="display:flex;gap:6px">
+                <button id="gv-ai-draft" style="flex:1;padding:8px 10px;background:#1a73e8;color:#fff;border:0;border-radius:6px;cursor:pointer">Draft</button>
+                <button id="gv-ai-telegram" style="padding:8px 10px;background:#f1f3f4;color:#1a73e8;border:1px solid #dadce0;border-radius:6px;cursor:pointer">Telegram</button>
+                <button id="gv-ai-log-niis" style="padding:8px 10px;background:#e8f0fe;color:#1967d2;border:1px solid #d2e3fc;border-radius:6px;cursor:pointer" title="Log a confirmed SMS in NIIS">Log NIIS</button>
+            </div>
+        `;
+        document.body.appendChild(widget);
+
+        const status = widget.querySelector('#gv-copilot-status');
+        const detail = widget.querySelector('#gv-copilot-detail');
+        const draftButton = widget.querySelector('#gv-ai-draft');
+        const telegramButton = widget.querySelector('#gv-ai-telegram');
+        const logButton = widget.querySelector('#gv-ai-log-niis');
+
+        async function createDraft() {
+            const field = getMessageInputField();
+            if (!field) throw new Error('Open a Google Voice conversation and wait for its message box to load.');
+            const client = getActiveClientDetails();
+
+            status.textContent = 'Checking calendar...';
+            const messages = getActiveThreadMessages();
+            const clientMessage = messages.at(-1) || 'The client is asking to schedule an inspection.';
+            const slots = await getAvailableInspectionSlots();
+
+            status.textContent = 'Generating reply...';
+            const reply = await generateAIReply(clientMessage, slots);
+            if (!field.isConnected || normalizePhone(getActiveClientDetails().phone) !== normalizePhone(client.phone)) {
+                throw new Error('The active conversation changed while the reply was being generated. Try again.');
+            }
+            status.textContent = 'Typing draft...';
+            await humanTypeIntoField(field, reply);
+            detail.textContent = `Draft ready. Available times: ${slots}`;
+            status.textContent = 'Draft ready';
+            return { reply, clientMessage, client, field };
+        }
+
+        draftButton.addEventListener('click', async () => {
+            draftButton.disabled = true;
+            try {
+                await createDraft();
+            } catch (error) {
+                console.error('[GV-AI] Could not create a draft:', error);
+                status.textContent = 'Error';
+                detail.textContent = error.message;
+            } finally {
+                draftButton.disabled = false;
+            }
+        });
+
+        telegramButton.addEventListener('click', async () => {
+            telegramButton.disabled = true;
+            try {
+                const { reply, clientMessage, client, field } = await createDraft();
+                if (!AI_CONFIG.telegramToken || !AI_CONFIG.telegramChatId) {
+                    throw new Error('Configure Telegram credentials from the Tampermonkey menu first.');
+                }
+                if (!normalizePhone(client.phone)) {
+                    throw new Error('Could not identify the client phone number for Telegram approval.');
+                }
+
+                const callbackId = `${Date.now().toString(36)}${Math.random().toString(36).slice(2, 6)}`;
+                status.textContent = 'Sending Telegram approval...';
+                await sendTelegramApprovalRequest(client, clientMessage, reply, callbackId);
+                status.textContent = 'Waiting for approval...';
+                detail.textContent = 'Approve or reject the draft from Telegram.';
+                const decision = await pollTelegramDecision(callbackId);
+
+                if (decision === 'rejected') {
+                    status.textContent = 'Rejected';
+                    detail.textContent = 'Telegram draft was rejected.';
+                    return;
+                }
+                if (decision === 'timeout') {
+                    status.textContent = 'Timed out';
+                    detail.textContent = 'No Telegram decision was received.';
+                    return;
+                }
+
+                status.textContent = 'Approved; sending...';
+                if (!field.isConnected || normalizePhone(getActiveClientDetails().phone) !== normalizePhone(client.phone)) {
+                    throw new Error('The active conversation changed while awaiting approval. The approved reply was not sent.');
+                }
+                await humanTypeIntoField(field, reply);
+                await new Promise(resolve => setTimeout(resolve, 800));
+                if (!field.isConnected || normalizePhone(getActiveClientDetails().phone) !== normalizePhone(client.phone)) {
+                    throw new Error('The active conversation changed before sending. The reply remains unsent.');
+                }
+                const sendButton = document.querySelector(
+                    'button[aria-label*="Send message" i], button[mattooltip*="Send" i], .send-button, gv-icon-button[aria-label*="Send" i]'
+                );
+                if (!sendButton || sendButton.disabled) {
+                    status.textContent = 'Draft ready';
+                    detail.textContent = 'Approved draft is in the message box. Send it manually; NIIS was not updated.';
+                    return;
+                }
+
+                sendButton.click();
+                broadcastAIAttemptToNIIS({
+                    phone: client.phone,
+                    clientName: client.name,
+                    draftText: reply
+                });
+                status.textContent = 'Sent';
+                detail.textContent = 'SMS sent. Requested NIIS logging for the matching order.';
+            } catch (error) {
+                console.error('[GV-AI] Telegram approval flow failed:', error);
+                status.textContent = 'Error';
+                detail.textContent = error.message;
+            } finally {
+                telegramButton.disabled = false;
+            }
+        });
+
+        logButton.addEventListener('click', () => {
+            const client = getActiveClientDetails();
+            if (client.phone === 'Unknown Phone') {
+                alert('Could not identify the active conversation phone number.');
+                return;
+            }
+            if (!confirm(`Log a confirmed SMS for ${client.name} (${client.phone}) in NIIS?`)) return;
+            broadcastAIAttemptToNIIS({
+                phone: client.phone,
+                clientName: client.name,
+                draftText: 'SMS confirmed manually in Google Voice'
+            });
+            status.textContent = 'NIIS sync requested';
+            detail.textContent = 'The open NIIS page will log this only if exactly one matching order is found.';
+        });
+    }
+
     // =========================================================================
     // SECTION 2: GOOGLE VOICE SENDER LOGIC (voice.google.com)
     // =========================================================================
@@ -686,6 +1263,7 @@
         container.appendChild(skipBtn);
         container.appendChild(clearBtn);
         document.body.appendChild(container);
+        injectAICopilotWidget();
 
         manageBtn.addEventListener('click', renderQueueModal);
 
