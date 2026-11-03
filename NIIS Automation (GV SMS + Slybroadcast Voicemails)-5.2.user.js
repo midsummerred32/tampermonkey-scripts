@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         NIIS Automation (GV SMS + Slybroadcast Voicemails)
 // @namespace    http://tampermonkey.net/
-// @version      5.10
+// @version      5.11
 // @downloadURL  https://raw.githubusercontent.com/midsummerred32/tampermonkey-scripts/master/NIIS%20Automation%20(GV%20SMS%20+%20Slybroadcast%20Voicemails)-5.2.user.js
 // @updateURL    https://raw.githubusercontent.com/midsummerred32/tampermonkey-scripts/master/NIIS%20Automation%20(GV%20SMS%20+%20Slybroadcast%20Voicemails)-5.2.user.js
 // @description  Automates NIIS SMS queues and Slybroadcast voicemail lists, with AI-assisted Google Voice scheduling, iCal availability, Telegram approval, and NIIS logging.
@@ -855,12 +855,53 @@ Suggest two of these confirmed openings politely, keep the reply to 1-2 friendly
     }
 
     function getActiveClientDetails() {
-        const header = document.querySelector('header, gv-conversation-header');
-        const headerText = header?.innerText || '';
-        const phoneMatch = headerText.match(/\+?1?\s*\(?\d{3}\)?[-.\s]?\d{3}[-.\s]?\d{4}/);
+        const visible = element => element.getClientRects().length > 0;
+        const getPhoneCandidates = element => {
+            if (!element) return [];
+            const nodes = [element, ...element.querySelectorAll('*').filter(visible)];
+            const values = nodes.flatMap(node => [
+                node.innerText,
+                node.textContent,
+                node.getAttribute('aria-label'),
+                node.getAttribute('title'),
+                node.getAttribute('data-phone-number'),
+                node.getAttribute('data-contact-phone'),
+                node.getAttribute('href')?.startsWith('tel:') ? node.getAttribute('href').slice(4) : ''
+            ]);
+            const candidates = new Set();
+            for (const value of values) {
+                const matches = String(value || '').match(/(?:\+?1[\s().-]*)?\(?\d{3}\)?[\s.-]*\d{3}[\s.-]*\d{4}/g) || [];
+                for (const match of matches) {
+                    const digits = normalizePhone(match);
+                    if (digits.length === 10) candidates.add(digits);
+                }
+            }
+            return Array.from(candidates);
+        };
+        const conversationHeader = Array.from(document.querySelectorAll('gv-conversation-header'))
+            .find(visible);
+        const pageHeaders = conversationHeader
+            ? [conversationHeader]
+            : Array.from(document.querySelectorAll('header'))
+                .filter(header => visible(header) && header.querySelector('h1, [role="heading"]'));
+        let phoneCandidates = pageHeaders.flatMap(getPhoneCandidates);
+
+        if (phoneCandidates.length === 0) {
+            const activeConversationItems = Array.from(document.querySelectorAll(
+                'gv-conversation-item[aria-selected="true"], gv-conversation-item[aria-current="true"], ' +
+                '[role="listitem"][aria-selected="true"], [role="listitem"][aria-current="true"], ' +
+                '[role="option"][aria-selected="true"]'
+            )).filter(visible);
+            phoneCandidates = activeConversationItems.flatMap(getPhoneCandidates);
+        }
+
+        const uniquePhones = Array.from(new Set(phoneCandidates));
+        const header = pageHeaders[0];
         return {
-            name: header?.querySelector('h1')?.innerText.trim() || 'Unknown Client',
-            phone: phoneMatch ? phoneMatch[0].trim() : 'Unknown Phone'
+            name: header?.querySelector('h1')?.innerText.trim() ||
+                header?.querySelector('[role="heading"]')?.innerText.trim() ||
+                'Unknown Client',
+            phone: uniquePhones.length === 1 ? uniquePhones[0] : 'Unknown Phone'
         };
     }
 
