@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         NIIS Automation (GV SMS + Slybroadcast Voicemails)
 // @namespace    http://tampermonkey.net/
-// @version      5.17
+// @version      5.18
 // @downloadURL  https://raw.githubusercontent.com/midsummerred32/tampermonkey-scripts/master/NIIS%20Automation%20(GV%20SMS%20+%20Slybroadcast%20Voicemails)-5.2.user.js
 // @updateURL    https://raw.githubusercontent.com/midsummerred32/tampermonkey-scripts/master/NIIS%20Automation%20(GV%20SMS%20+%20Slybroadcast%20Voicemails)-5.2.user.js
 // @description  Automates NIIS SMS queues and Slybroadcast voicemail lists, with AI-assisted Google Voice scheduling, iCal availability, Telegram approval, and NIIS logging.
@@ -26,6 +26,53 @@
 
     const currentUrl = window.location.href;
     let googleVoiceSmsSendInProgress = false;
+
+    function getSavedAlternatePhone(orderId) {
+        if (!orderId) return '';
+        const savedPhones = GM_getValue('gv_alternate_phones', {});
+        return normalizeUSPhoneNumber(savedPhones?.[String(orderId)]) || '';
+    }
+
+    function saveAlternatePhone(orderId, phone) {
+        if (!orderId) return false;
+        const digits = normalizeUSPhoneNumber(phone);
+        if (!digits) return false;
+        const savedPhones = GM_getValue('gv_alternate_phones', {});
+        const updatedPhones = savedPhones && typeof savedPhones === 'object' && !Array.isArray(savedPhones)
+            ? savedPhones
+            : {};
+        updatedPhones[String(orderId)] = digits;
+        GM_setValue('gv_alternate_phones', updatedPhones);
+        return true;
+    }
+
+    function clearAlternatePhone(orderId) {
+        if (!orderId) return;
+        const savedPhones = GM_getValue('gv_alternate_phones', {});
+        if (!savedPhones || typeof savedPhones !== 'object' || Array.isArray(savedPhones)) return;
+        delete savedPhones[String(orderId)];
+        GM_setValue('gv_alternate_phones', savedPhones);
+    }
+
+    function rememberOrderPhone(orderId, phone) {
+        const digits = normalizeUSPhoneNumber(phone);
+        if (!orderId || !digits) return;
+        const phoneIndex = GM_getValue('gv_order_phone_index', {});
+        const orderIds = Array.isArray(phoneIndex[digits]) ? phoneIndex[digits] : [];
+        if (orderIds.some(id => String(id) === String(orderId))) return;
+        phoneIndex[digits] = [...orderIds, String(orderId)];
+        GM_setValue('gv_order_phone_index', phoneIndex);
+    }
+
+    function findOrdersForPhone(phone) {
+        const digits = normalizeUSPhoneNumber(phone);
+        if (!digits) return [];
+        const phoneIndex = GM_getValue('gv_order_phone_index', {});
+        const orderIds = phoneIndex && typeof phoneIndex === 'object' && !Array.isArray(phoneIndex)
+            ? phoneIndex[digits]
+            : [];
+        return Array.isArray(orderIds) ? [...new Set(orderIds.map(String))] : [];
+    }
 
     const AI_CONFIG = {
         ollamaUrl: GM_getValue('ollamaUrl', 'http://localhost:11434/api/generate'),
@@ -1142,6 +1189,14 @@ Suggest two of these confirmed openings politely, keep the reply to 1-2 friendly
                 orderLabel.textContent = `#${index + 1} | Order ID: ${item.orderId || 'N/A'}`;
 
                 const actions = document.createElement('div');
+                const alternatePhone = getSavedAlternatePhone(item.orderId);
+                const alternateButton = document.createElement('button');
+                alternateButton.type = 'button';
+                alternateButton.textContent = alternatePhone ? 'Edit Alt #' : 'Save Alt #';
+                alternateButton.dataset.index = String(index);
+                alternateButton.className = 'alternate-queue-btn';
+                alternateButton.disabled = !item.orderId;
+                alternateButton.style.cssText = 'padding:4px 10px;background:#20c997;color:#102a24;border:0;border-radius:3px;cursor:pointer;font-size:12px;font-weight:bold;margin-right:5px;';
                 const editButton = document.createElement('button');
                 editButton.type = 'button';
                 editButton.textContent = 'Edit';
@@ -1154,7 +1209,7 @@ Suggest two of these confirmed openings politely, keep the reply to 1-2 friendly
                 deleteButton.dataset.index = String(index);
                 deleteButton.className = 'delete-queue-btn';
                 deleteButton.style.cssText = 'padding:4px 10px;background:#dc3545;color:#fff;border:0;border-radius:3px;cursor:pointer;font-size:12px;font-weight:bold;';
-                actions.append(editButton, deleteButton);
+                actions.append(alternateButton, editButton, deleteButton);
                 heading.append(orderLabel, actions);
 
                 const details = document.createElement('div');
@@ -1169,7 +1224,9 @@ Suggest two of these confirmed openings politely, keep the reply to 1-2 friendly
                 const phoneLabel = document.createElement('strong');
                 phoneLabel.textContent = '📞 Phone: ';
                 const phoneText = document.createElement('span');
-                phoneText.textContent = item.phone || 'N/A';
+                phoneText.textContent = alternatePhone
+                    ? `${item.phone || 'N/A'} (saved alternate: ${alternatePhone})`
+                    : item.phone || 'N/A';
                 phone.append(phoneLabel, phoneText);
                 details.append(address, phone);
 
@@ -1187,6 +1244,27 @@ Suggest two of these confirmed openings politely, keep the reply to 1-2 friendly
                     if (!Number.isInteger(idx) || idx < 0 || idx >= currentQueue.length) return;
                     currentQueue.splice(idx, 1);
                     GM_setValue('gv_sms_queue', currentQueue);
+                    renderQueueModal();
+                });
+            });
+
+            listContainer.querySelectorAll('.alternate-queue-btn').forEach(button => {
+                button.addEventListener('click', () => {
+                    const idx = Number(button.dataset.index);
+                    const currentQueue = GM_getValue('gv_sms_queue', []);
+                    if (!Number.isInteger(idx) || idx < 0 || idx >= currentQueue.length) return;
+                    const item = currentQueue[idx];
+                    const enteredPhone = prompt(
+                        'Enter the insured’s alternate 10-digit US phone number. Leave blank to clear the saved alternate:',
+                        getSavedAlternatePhone(item.orderId)
+                    );
+                    if (enteredPhone === null) return;
+                    if (!enteredPhone.trim()) {
+                        clearAlternatePhone(item.orderId);
+                    } else if (!saveAlternatePhone(item.orderId, enteredPhone)) {
+                        alert('Enter a valid 10-digit US phone number (or 11 digits starting with 1).');
+                        return;
+                    }
                     renderQueueModal();
                 });
             });
@@ -1758,6 +1836,8 @@ Suggest two of these confirmed openings politely, keep the reply to 1-2 friendly
 
                         const textBody = buildMessage(countyType, formattedAddress);
 
+                                        rememberOrderPhone(orderId, phone);
+
                         if (!queue.some(item => item.orderId === orderId)) {
                             queue.push({
                                 phone,
@@ -1809,6 +1889,7 @@ Suggest two of these confirmed openings politely, keep the reply to 1-2 friendly
             <div style="display:flex;gap:6px">
                 <button id="gv-ai-draft" style="flex:1;padding:8px 10px;background:#1a73e8;color:#fff;border:0;border-radius:6px;cursor:pointer">Draft</button>
                 <button id="gv-ai-telegram" style="padding:8px 10px;background:#f1f3f4;color:#1a73e8;border:1px solid #dadce0;border-radius:6px;cursor:pointer">Telegram</button>
+                <button id="gv-save-alternate" style="padding:8px 10px;background:#e6f4ea;color:#137333;border:1px solid #ceead6;border-radius:6px;cursor:pointer" title="Save an insured-provided alternate number">Save #</button>
                 <button id="gv-ai-log-niis" style="padding:8px 10px;background:#e8f0fe;color:#1967d2;border:1px solid #d2e3fc;border-radius:6px;cursor:pointer" title="Log a confirmed SMS in NIIS">Log NIIS</button>
             </div>
         `;
@@ -1818,7 +1899,41 @@ Suggest two of these confirmed openings politely, keep the reply to 1-2 friendly
         const detail = widget.querySelector('#gv-copilot-detail');
         const draftButton = widget.querySelector('#gv-ai-draft');
         const telegramButton = widget.querySelector('#gv-ai-telegram');
+        const saveAlternateButton = widget.querySelector('#gv-save-alternate');
         const logButton = widget.querySelector('#gv-ai-log-niis');
+
+        saveAlternateButton.addEventListener('click', () => {
+            const client = getActiveClientDetails();
+            const conversationPhone = normalizeUSPhoneNumber(client.phone);
+            if (!conversationPhone) {
+                alert('Could not identify the active conversation phone number.');
+                return;
+            }
+            const matchingOrders = findOrdersForPhone(conversationPhone);
+            if (matchingOrders.length !== 1) {
+                alert(matchingOrders.length
+                    ? 'This conversation number matches multiple NIIS orders. Save the alternate from a specific order in Queue Manager.'
+                    : 'This conversation is not linked to a queued NIIS order. Save the alternate from that order in Queue Manager.');
+                return;
+            }
+
+            const orderId = matchingOrders[0];
+            const enteredPhone = prompt(
+                `Save an alternate phone number for NIIS order ${orderId}. Leave blank to clear the saved alternate:`,
+                getSavedAlternatePhone(orderId)
+            );
+            if (enteredPhone === null) return;
+            if (!enteredPhone.trim()) {
+                clearAlternatePhone(orderId);
+            } else if (!saveAlternatePhone(orderId, enteredPhone)) {
+                alert('Enter a valid 10-digit US phone number (or 11 digits starting with 1).');
+                return;
+            }
+            status.textContent = 'Alternate saved';
+            detail.textContent = enteredPhone.trim()
+                ? `Future queued SMS messages for order ${orderId} will use the saved alternate number.`
+                : `The saved alternate number for order ${orderId} was cleared.`;
+        });
 
         async function createDraft() {
             const field = getMessageInputField();
@@ -2085,6 +2200,30 @@ Suggest two of these confirmed openings politely, keep the reply to 1-2 friendly
             element.dispatchEvent(new Event('change', { bubbles: true }));
         }
 
+        function findGoogleVoiceRecipientInput() {
+            const isVisible = input => input.getClientRects().length > 0 && !input.disabled;
+            const isSearchInput = input => {
+                const description = [input.getAttribute('aria-label'), input.placeholder, input.name]
+                    .join(' ').toLowerCase();
+                return description.includes('search') || input.closest('form[role="search"]') ||
+                    input.closest('#gv-copilot-container, #gv-queue-modal');
+            };
+            const inputs = Array.from(document.querySelectorAll('input:not([type="hidden"])'))
+                .filter(input => isVisible(input) && !isSearchInput(input));
+            const labeledInputs = inputs.filter(input => {
+                const description = [input.getAttribute('aria-label'), input.placeholder, input.name]
+                    .join(' ').toLowerCase();
+                return /name|phone|recipient|(^|\\s)to($|\\s)/.test(description);
+            });
+            if (labeledInputs.length === 1) return labeledInputs[0];
+            if (labeledInputs.includes(document.activeElement)) return document.activeElement;
+
+            const textInputs = inputs.filter(input =>
+                !input.type || ['text', 'tel'].includes(input.type.toLowerCase())
+            );
+            return textInputs.length === 1 ? textInputs[0] : null;
+        }
+
         testModeBtn.addEventListener('click', () => {
             if (isRunning || googleVoiceSmsSendInProgress) {
                 alert('Wait for the current Google Voice send to finish before changing Test Mode.');
@@ -2115,9 +2254,7 @@ Suggest two of these confirmed openings politely, keep the reply to 1-2 friendly
                 newMessageButton.click();
                 await sleep(1000);
 
-                const recipientInput = document.querySelector(
-                    'input[placeholder*="Type a name or phone number" i], input[aria-label*="Type a name or phone number" i]'
-                );
+                const recipientInput = findGoogleVoiceRecipientInput();
                 if (!recipientInput) throw new Error('Could not find the Google Voice recipient field.');
                 setInputValue(recipientInput, testPhone);
                 recipientInput.dispatchEvent(new KeyboardEvent('keydown', {
@@ -2265,9 +2402,7 @@ Suggest two of these confirmed openings politely, keep the reply to 1-2 friendly
             if (!newMessageButton) throw new Error('Could not find Google Voice’s New message button.');
             newMessageButton.click();
             await sleep(1000);
-            const recipientInput = document.querySelector(
-                'input[placeholder*="Type a name or phone number" i], input[aria-label*="Type a name or phone number" i]'
-            );
+            const recipientInput = findGoogleVoiceRecipientInput();
             if (!recipientInput) throw new Error('Could not find the Google Voice recipient field.');
             setInputValue(recipientInput, phone);
             recipientInput.dispatchEvent(new KeyboardEvent('keydown', {
@@ -2940,7 +3075,9 @@ Write only the SMS body that carries out the user's instruction. Use the convers
             while (queue.length > 0 && isRunning) {
                 skipRequested = false;
                 const currentItem = queue[0];
-                const recipientPhone = testMode ? testPhone : currentItem.phone;
+                const recipientPhone = testMode
+                    ? testPhone
+                    : getSavedAlternatePhone(currentItem.orderId) || currentItem.phone;
                 btn.textContent = `Stop (${queue.length} left) - Sending to ${recipientPhone}...`;
 
                 try {
@@ -2956,6 +3093,7 @@ Write only the SMS body that carries out the user's instruction. Use the convers
                     if (targetPhone.length !== 10 || !String(currentItem.message || '').trim()) {
                         throw new Error(`Order ${currentItem.orderId} has an invalid phone number or empty message.`);
                     }
+                    if (!testMode) rememberOrderPhone(currentItem.orderId, currentItem.phone);
 
                     const sendMsgBtn = document.querySelector('.threads-button[aria-label="Send new message"]');
                     if (!sendMsgBtn) throw new Error('Could not find Google Voice’s New message button.');
@@ -2970,9 +3108,7 @@ Write only the SMS body that carries out the user's instruction. Use the convers
                         break;
                     }
 
-                    const recipientInput = document.querySelector(
-                        'input[placeholder*="Type a name or phone number" i], input[aria-label*="Type a name or phone number" i]'
-                    );
+                    const recipientInput = findGoogleVoiceRecipientInput();
                     if (!recipientInput) throw new Error('Could not find the Google Voice recipient field; the item remains queued.');
 
                     setInputValue(recipientInput, recipientPhone);
