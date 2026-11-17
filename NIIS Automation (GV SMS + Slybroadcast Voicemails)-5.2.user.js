@@ -810,6 +810,7 @@ Suggest two of these confirmed openings politely, keep the reply to 1-2 friendly
 
     function getMessageInputField() {
         const selectors = [
+            'textarea.message-input',
             'textarea[aria-label*="message" i]',
             'textarea[placeholder*="message" i]',
             '[contenteditable="true"][aria-label*="message" i]',
@@ -2278,9 +2279,7 @@ Suggest two of these confirmed openings politely, keep the reply to 1-2 friendly
                 matches[0].click();
                 await sleep(1000);
 
-                const field = document.querySelector(
-                    'textarea[aria-label*="Type a message" i], textarea[placeholder*="Type a message" i], textarea#user-input'
-                );
+                const field = getMessageInputField();
                 if (!field || field.disabled || field.getClientRects().length === 0) {
                     throw new Error('Could not find an active Google Voice message box.');
                 }
@@ -2486,9 +2485,7 @@ Write only the SMS body that carries out the user's instruction. Use the convers
                 throw new Error('The active Google Voice conversation does not match the approved recipient.');
             }
 
-            const field = document.querySelector(
-                'textarea[aria-label*="Type a message" i], textarea[placeholder*="Type a message" i], textarea#user-input'
-            );
+            const field = getMessageInputField();
             if (!field || field.disabled || field.getClientRects().length === 0) {
                 throw new Error('Could not find an active Google Voice message box.');
             }
@@ -3148,9 +3145,7 @@ Write only the SMS body that carries out the user's instruction. Use the convers
                         break;
                     }
 
-                    const messageBox = document.querySelector(
-                        'textarea[aria-label*="Type a message" i], textarea[placeholder*="Type a message" i], textarea#user-input'
-                    );
+                    const messageBox = getMessageInputField();
                     if (!messageBox || messageBox.disabled || messageBox.getClientRects().length === 0) {
                         throw new Error('Could not find an active message box; the item remains queued.');
                     }
